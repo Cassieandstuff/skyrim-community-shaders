@@ -10,6 +10,7 @@ shadertoolsconfig.json
 # Folder view configuration files
 **/.DS_Store
 .claude/settings.local.json
+.claude/worktrees/
 
 # Shader test artifacts
 tests/shaders/build/

@@ -68,8 +68,10 @@ set_property(TARGET shader_tests PROPERTY CXX_STANDARD_REQUIRED ON)
 
 if(MSVC)
     # Suppress C4864 in tuplet (via ShaderTestFramework) for VS 2026 migration
+    # Suppress C5285: float16_t.hpp specializes std::is_floating_point_v etc.,
+    # which is forbidden by N5014 but cannot be patched in a FetchContent dep.
     if(TARGET ShaderTestFramework)
-        target_compile_options(ShaderTestFramework PUBLIC /wd4864)
+        target_compile_options(ShaderTestFramework PUBLIC /wd4864 /wd5285)
     endif()
 endif()
 

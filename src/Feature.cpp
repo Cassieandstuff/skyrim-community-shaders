@@ -7,6 +7,7 @@
 #include "Features/ExponentialHeightFog.h"
 #include "Features/ExtendedMaterials.h"
 #include "Features/ExtendedTranslucency.h"
+#include "Features/BloodDecalGrass.h"
 #include "Features/GrassCollision.h"
 #include "Features/GrassLighting.h"
 #include "Features/HDRDisplay.h"
@@ -17,6 +18,8 @@
 #include "Features/LODBlending.h"
 #include "Features/LightLimitFix.h"
 #include "Features/LinearLighting.h"
+#include "Features/MeshInstancing.h"
+#include "Features/SnowDeformation.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/RenderDoc.h"
 #include "Features/ScreenSpaceGI.h"
@@ -212,6 +215,7 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 	static std::vector<Feature*> features = {
 		&globals::features::truePBR,
 		&globals::features::volumetricShadows,
+		&globals::features::bloodDecalGrass,
 		&globals::features::grassLighting,
 		&globals::features::grassCollision,
 		&globals::features::screenSpaceShadows,
@@ -243,7 +247,9 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::linearLighting,
 		&globals::features::unifiedWater,
 		&globals::features::exponentialHeightFog,
-		&globals::features::hdrDisplay
+		&globals::features::hdrDisplay,
+		&globals::features::meshInstancing,
+		&globals::features::snowDeformation
 	};
 
 	if (REL::Module::IsVR()) {

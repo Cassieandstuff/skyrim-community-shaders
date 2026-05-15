@@ -1,6 +1,7 @@
 #include "TerrainBlending.h"
 
 #include "Deferred.h"
+#include "Features/SnowDeformation.h"
 #include "Globals.h"
 #include "ShaderCache.h"
 #include "State.h"

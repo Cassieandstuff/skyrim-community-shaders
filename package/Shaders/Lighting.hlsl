@@ -54,7 +54,9 @@ struct VS_INPUT
 #endif  // EYE
 #if defined(VR)
 	uint InstanceID: SV_INSTANCEID;
-#endif  // VR
+#elif defined(MESH_INSTANCING)
+	uint InstanceID: SV_INSTANCEID;
+#endif
 };
 
 struct VS_OUTPUT
@@ -165,6 +167,15 @@ cbuffer VS_PerFrame : register(b12)
 #	endif      // VR
 };
 
+#	if defined(MESH_INSTANCING)
+struct InstanceData
+{
+	float4 World[3];
+	float4 PreviousWorld[3];
+};
+StructuredBuffer<InstanceData> InstanceBuffer : register(t30);
+#	endif
+
 #	if defined(TREE_ANIM)
 float2 GetTreeShiftVector(float4 position, float4 color)
 {
@@ -214,9 +225,19 @@ VS_OUTPUT main(VS_INPUT input)
 
 	float4 viewPos = mul(ViewProj[eyeIndex], worldPosition);
 #	else   // !SKINNED
-	precise float4 previousWorldPosition = float4(mul(PreviousWorld[eyeIndex], inputPosition), 1);
-	precise float4 worldPosition = float4(mul(World[eyeIndex], inputPosition), 1);
-	precise float4x4 world4x4 = float4x4(World[eyeIndex][0], World[eyeIndex][1], World[eyeIndex][2], float4(0, 0, 0, 1));
+	row_major float3x4 instWorld = World[eyeIndex];
+	row_major float3x4 instPrevWorld = PreviousWorld[eyeIndex];
+#		if defined(MESH_INSTANCING)
+	if (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsInstanced) {
+		uint instanceOffset = (Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::InstanceOffsetMask) >> Permutation::ExtraFlags::InstanceOffsetShift;
+		InstanceData inst = InstanceBuffer[instanceOffset + input.InstanceID];
+		instWorld = float3x4(inst.World[0], inst.World[1], inst.World[2]);
+		instPrevWorld = float3x4(inst.PreviousWorld[0], inst.PreviousWorld[1], inst.PreviousWorld[2]);
+	}
+#		endif
+	precise float4 previousWorldPosition = float4(mul(instPrevWorld, inputPosition), 1);
+	precise float4 worldPosition = float4(mul(instWorld, inputPosition), 1);
+	precise float4x4 world4x4 = float4x4(instWorld[0], instWorld[1], instWorld[2], float4(0, 0, 0, 1));
 	precise float4x4 modelView = mul(ViewProj[eyeIndex], world4x4);
 	float4 viewPos = mul(modelView, inputPosition);
 #	endif  // SKINNED
@@ -262,9 +283,9 @@ VS_OUTPUT main(VS_INPUT input)
 	vsout.TBN1.xyz = worldTbnTr[1];
 	vsout.TBN2.xyz = worldTbnTr[2];
 #		else
-	vsout.TBN0.xyz = mul(tbn, World[eyeIndex][0].xyz);
-	vsout.TBN1.xyz = mul(tbn, World[eyeIndex][1].xyz);
-	vsout.TBN2.xyz = mul(tbn, World[eyeIndex][2].xyz);
+	vsout.TBN0.xyz = mul(tbn, instWorld[0].xyz);
+	vsout.TBN1.xyz = mul(tbn, instWorld[1].xyz);
+	vsout.TBN2.xyz = mul(tbn, instWorld[2].xyz);
 	float3x3 tempTbnTr = transpose(float3x3(vsout.TBN0.xyz, vsout.TBN1.xyz, vsout.TBN2.xyz));
 	tempTbnTr[0] = normalize(tempTbnTr[0]);
 	tempTbnTr[1] = normalize(tempTbnTr[1]);
@@ -291,7 +312,7 @@ VS_OUTPUT main(VS_INPUT input)
 	vsout.LandBlendWeights2.w = 1 - saturate(0.000375600968 * (9625.59961 - length(gridOffset)));
 	vsout.LandBlendWeights2.xyz = input.LandBlendWeights2.xyz;
 #	elif defined(PROJECTED_UV) && !defined(SKINNED)
-	float3x3 texProjWorld3x3 = float3x3(World[eyeIndex][0].xyz, World[eyeIndex][1].xyz, World[eyeIndex][2].xyz);
+	float3x3 texProjWorld3x3 = float3x3(instWorld[0].xyz, instWorld[1].xyz, instWorld[2].xyz);
 	vsout.TexProj = mul(texProjWorld3x3, TextureProj[eyeIndex][2].xyz);
 #	endif
 
@@ -344,9 +365,6 @@ struct PS_OUTPUT
 	float4 Specular: SV_Target4;
 	float4 Reflectance: SV_Target5;
 	float4 Masks: SV_Target6;
-#	if defined(SNOW)
-	float4 Parameters: SV_Target7;
-#	endif
 };
 #else
 struct PS_OUTPUT
@@ -360,9 +378,9 @@ struct PS_OUTPUT
 
 #	if defined(VR_STEREO_OPT) && !defined(SNOW)
 // POM depth offset UAV — written per-pixel for StereoBlendCS depth-aware reprojection.
-// Bound at u7 (after the 7 deferred MRT slots 0-6) via OMSetRenderTargetsAndUnorderedAccessViews.
+// Bound at u8 (after the 8 deferred MRT slots 0-7) via OMSetRenderTargetsAndUnorderedAccessViews.
 // -1.0 = no POM (sentinel, matches ClearPomOffsetTexture); >= 0 = POM ran (StereoBlendCS checks >= 0).
-RWTexture2D<float> PomOffsetTex : register(u7);
+RWTexture2D<float> PomOffsetTex : register(u8);
 #	endif
 
 SamplerState SampTerrainParallaxSampler : register(s1);
@@ -948,6 +966,10 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 #	endif
 
 #	include "Common/LightingEval.hlsli"
+
+#	if defined(BLOOD_DECAL_GRASS)
+#		include "BloodDecalGrass/BloodDecalGrass.hlsli"
+#	endif
 
 PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 {
@@ -2372,6 +2394,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	float waterRoughnessSpecular = 1;
 
+#	if defined(BLOOD_DECAL_GRASS) && !defined(SKINNED)
+	float3 bloodTint = 0;
+	float  bloodStr  = 0;
+#	endif
+
 #	if defined(WETNESS_EFFECTS)
 	// Initialize wetness parameters
 	float wetness = 0.0;
@@ -2460,6 +2487,37 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	static const float wetnessMinPuddleRoughness = 0.05;
 	waterRoughnessSpecular = max(saturate(1.0 - wetnessGlossinessSpecular), wetnessMinPuddleRoughness);
 #	endif
+
+#	if defined(BLOOD_DECAL_GRASS) && !defined(SKINNED)
+	// Sample both blood systems and pick the dominant contributor.
+	// Must run after WETNESS_EFFECTS finalizes waterRoughnessSpecular/wetnessNormal,
+	// and before per-light EvaluateWetnessLighting calls that consume those values.
+	{
+		float3 absWorldPos = input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust[eyeIndex].xyz;
+
+		float3 soakTint  = BloodDecalGrass::GetSurfaceBloodInfluence(absWorldPos, worldNormal, viewDirection);
+		float3 fluidTint = BloodDecalGrass::GetFluidSurfaceInfluence(absWorldPos, worldNormal, viewDirection);
+
+		float soakStr  = length(soakTint);
+		float fluidStr = length(fluidTint);
+		bloodTint = fluidStr >= soakStr ? fluidTint : soakTint;
+		bloodStr  = saturate(max(soakStr, fluidStr));
+
+		if (bloodStr > 0.001) {
+			BloodDecalGrass::BloodSurfaceProperties bloodProps =
+				BloodDecalGrass::GetBloodSurfaceProperties(absWorldPos, worldNormal, bloodStr, viewDirection);
+
+			// Specular roughness: min() picks the glossier of blood and puddle wetness.
+			waterRoughnessSpecular = min(waterRoughnessSpecular, lerp(1.0, bloodProps.roughness, bloodStr));
+
+#		if defined(WETNESS_EFFECTS)
+			// Blend the wetness normal toward the blood height-field normal,
+			// weighted by liquid presence (fresh blood moves normal, dried stain does not).
+			wetnessNormal = normalize(lerp(wetnessNormal, bloodProps.normal, bloodStr * bloodProps.wetness));
+#		endif
+		}
+	}
+#	endif  // BLOOD_DECAL_GRASS && !SKINNED
 
 	float llDirLightMult = SharedData::linearLightingSettings.enableLinearLighting && !SharedData::linearLightingSettings.isDirLightLinear && (inWorld || inReflection) && !SharedData::InInterior ? SharedData::linearLightingSettings.dirLightMult : 1.0f;
 	float3 dirLightColor = Color::DirectionalLight(DirLightColor.xyz / max(llDirLightMult, 1e-5), SharedData::linearLightingSettings.isDirLightLinear) * llDirLightMult;
@@ -2934,6 +2992,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #		endif
 #	endif
 
+#	if defined(BLOOD_DECAL_GRASS) && !defined(SKINNED)
+	// Tint material.BaseColor toward blood after wetness darkening so blood hue
+	// propagates into both direct diffuse (diffuseColor * material.BaseColor) and
+	// indirect albedo (indirectLobeWeights.diffuse → outputAlbedo → psout.Albedo).
+	if (bloodStr > 0.001)
+		material.BaseColor = lerp(material.BaseColor, bloodTint / max(bloodStr, 0.001), bloodStr);
+#	endif
+
 	float4 color = 0;
 
 	indirectContext = CreateIndirectLightingContext(ambientNormal, vertexNormal.xyz, viewDirection);
@@ -3269,20 +3335,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	PomOffsetTex[uint2(input.Position.xy)] = hasPOM ? pixelOffset : Stereo::POM_NO_DATA;
 #		endif
 
-#		if defined(SNOW)
-#			if defined(TRUE_PBR)
-	psout.Parameters.x = Color::RGBToLuminanceAlternative(specularColor);
-	psout.Parameters.y = 0;
-#			else
-	psout.Parameters.x = Color::RGBToLuminanceAlternative(lightsSpecularColor);
-#			endif
-	psout.Parameters.w = psout.Diffuse.w;
-#		endif
-
 	float masksZ = Color::RGBToYCoCg(directionalAmbientColor).x;
 
 #		if defined(SSS) && defined(SKIN)
 	psout.Masks = float4(saturate(baseColor.a), !(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::IsBeastRace), masksZ, psout.Diffuse.w);
+#		elif defined(LANDSCAPE) && defined(SNOW_DEFORMATION)
+	// masks.y = 1.0 marks terrain pixels so the snow deformation CS can exclude them
+	// from actor-contact detection (terrain has masks.x = 0, so SSS path never fires).
+	psout.Masks = float4(0, 1.0, masksZ, psout.Diffuse.w);
 #		else
 	psout.Masks = float4(0, 0, masksZ, psout.Diffuse.w);
 #		endif
@@ -3300,3 +3360,139 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	return psout;
 }
 #endif  // PSHADER
+
+// ============================================================================
+// Snow Deformation Hull + Domain Shaders
+// Compiled at runtime via Util::CompileShader with:
+//   target  hs_5_0 / ds_5_0
+//   defines LANDSCAPE, VC, SNOW_DEFORMATION
+//   (HULLSHADER / DOMAINSHADER injected automatically by CompileShader)
+// cbuffers available: SharedData b5, FeatureData b6, FrameBuffer::PerFrame b12
+// SRVs   : t106 = deformation field (R16_FLOAT, ping-pong read side)
+//          t107 = ridge field       (R16_FLOAT)
+// Sampler: s8   = bilinear WRAP
+// ============================================================================
+#if defined(SNOW_DEFORMATION) && !defined(VR) && (defined(HULLSHADER) || defined(DOMAINSHADER))
+
+Texture2D<float>  texSnowDeformDS : register(t106);
+Texture2D<float>  texSnowRidgeDS  : register(t107);
+SamplerState      deformSamplerDS : register(s8);
+
+// ── Patch-constant output ────────────────────────────────────────────────────
+struct SnowHS_PatchConstant
+{
+	float Edges[3]   : SV_TessFactor;
+	float Inside[1]  : SV_InsideTessFactor;
+};
+
+// ── Patch-constant function: distance-adaptive tessellation ─────────────────
+SnowHS_PatchConstant SnowHS_PatchConstantFunc(
+	InputPatch<VS_OUTPUT, 3> patch,
+	uint                     PatchID : SV_PrimitiveID)
+{
+	SnowHS_PatchConstant output;
+
+	// Camera-relative patch centre — camera is at the origin in this space.
+	float3 patchCenter = (patch[0].WorldPosition.xyz +
+	                      patch[1].WorldPosition.xyz +
+	                      patch[2].WorldPosition.xyz) / 3.0;
+	float dist = length(patchCenter);
+
+	SharedData::SnowDeformationSettings s = SharedData::snowDeformationSettings;
+
+	float maxFactor = s.TessellationScale * 64.0;
+	float t         = saturate(dist / max(s.TessellationFalloff, 1.0));
+	float factor    = max(lerp(maxFactor, 1.0, t), 1.0);
+
+	output.Edges[0]  = factor;
+	output.Edges[1]  = factor;
+	output.Edges[2]  = factor;
+	output.Inside[0] = factor;
+	return output;
+}
+
+// ── Hull shader: trivial pass-through ────────────────────────────────────────
+[domain("tri")]
+[partitioning("fractional_even")]
+[outputtopology("triangle_cw")]
+[outputcontrolpoints(3)]
+[patchconstantfunc("SnowHS_PatchConstantFunc")]
+[maxtessfactor(64.0f)]
+VS_OUTPUT SnowHS_main(
+	InputPatch<VS_OUTPUT, 3> patch,
+	uint                     i       : SV_OutputControlPointID,
+	uint                     PatchID : SV_PrimitiveID)
+{
+	return patch[i];
+}
+
+// ── Domain shader: interpolate + displace + reproject ───────────────────────
+[domain("tri")]
+VS_OUTPUT SnowDS_main(
+	SnowHS_PatchConstant          pcData,
+	float3                        bary : SV_DomainLocation,
+	const OutputPatch<VS_OUTPUT, 3> patch)
+{
+	// Barycentric interpolation of all VS_OUTPUT fields.
+	// (Fields are chosen for the LANDSCAPE+VC+SNOW_DEFORMATION permutation.)
+	VS_OUTPUT v;
+	v.Position              = bary.x * patch[0].Position              + bary.y * patch[1].Position              + bary.z * patch[2].Position;
+	v.TexCoord0             = bary.x * patch[0].TexCoord0             + bary.y * patch[1].TexCoord0             + bary.z * patch[2].TexCoord0;
+	v.TBN0                  = bary.x * patch[0].TBN0                  + bary.y * patch[1].TBN0                  + bary.z * patch[2].TBN0;
+	v.TBN1                  = bary.x * patch[0].TBN1                  + bary.y * patch[1].TBN1                  + bary.z * patch[2].TBN1;
+	v.TBN2                  = bary.x * patch[0].TBN2                  + bary.y * patch[1].TBN2                  + bary.z * patch[2].TBN2;
+	v.LandBlendWeights1     = bary.x * patch[0].LandBlendWeights1     + bary.y * patch[1].LandBlendWeights1     + bary.z * patch[2].LandBlendWeights1;
+	v.LandBlendWeights2     = bary.x * patch[0].LandBlendWeights2     + bary.y * patch[1].LandBlendWeights2     + bary.z * patch[2].LandBlendWeights2;
+	v.WorldPosition         = bary.x * patch[0].WorldPosition         + bary.y * patch[1].WorldPosition         + bary.z * patch[2].WorldPosition;
+	v.PreviousWorldPosition = bary.x * patch[0].PreviousWorldPosition + bary.y * patch[1].PreviousWorldPosition + bary.z * patch[2].PreviousWorldPosition;
+	v.Color                 = bary.x * patch[0].Color                 + bary.y * patch[1].Color                 + bary.z * patch[2].Color;
+	v.FogParam              = bary.x * patch[0].FogParam              + bary.y * patch[1].FogParam              + bary.z * patch[2].FogParam;
+	v.ModelPosition         = bary.x * patch[0].ModelPosition         + bary.y * patch[1].ModelPosition         + bary.z * patch[2].ModelPosition;
+
+	SharedData::SnowDeformationSettings s = SharedData::snowDeformationSettings;
+
+	[branch] if (s.Enabled)
+	{
+		// Diagnostic bypass: when DebugForceDeform is set, simulate fully-compressed snow —
+		// displacement = SnowLayerDepth everywhere → net Z offset = 0 → terrain sits exactly
+		// at physics height.  Toggle this off to see the full raise and confirm DS is working.
+		[branch] if (s.DebugForceDeform)
+		{
+			v.Position = mul(FrameBuffer::CameraViewProj[0], float4(v.WorldPosition.xyz, 1.0));
+			return v;
+		}
+
+		// Convert camera-relative XY to absolute world XY for the toroidal grid lookup.
+		float2 absXY = v.WorldPosition.xy + FrameBuffer::CameraPosAdjust[0].xy;
+
+		// Toroidal UV:
+		//   UV = ((worldXY - GridWorldOrigin) / GridCellSize + ArrayOrigin) / GRID_DIM
+		float2 localXY    = (absXY - float2(s.GridWorldOriginX, s.GridWorldOriginY)) / s.GridCellSize;
+		float2 arrayCoord = localXY + float2((float)s.ArrayOriginX, (float)s.ArrayOriginY);
+		float2 gridUV     = arrayCoord / 512.0;
+
+		float displacement = texSnowDeformDS.SampleLevel(deformSamplerDS, gridUV, 0);
+
+		// Fluffy-snow model: terrain is raised by SnowLayerDepth by default (untouched snow).
+		// Actor contact writes displacement toward SnowLayerDepth, compressing the snow back
+		// down to the physics terrain level.  Net Z offset = SnowLayerDepth - displacement:
+		//   displacement = 0            → raised by SnowLayerDepth  (untouched fluffy snow)
+		//   displacement = SnowLayerDepth → no raise                 (fully-compressed footprint)
+		// PreviousWorldPosition is displaced by the same amount so TAA motion vectors
+		// stay valid (no false per-frame screen-space drift on static snow terrain).
+		v.WorldPosition.z         += (s.SnowLayerDepth - displacement);
+		v.PreviousWorldPosition.z += (s.SnowLayerDepth - displacement);
+
+		// ALWAYS reproject from world position to clip space, even when no displacement
+		// is applied.  The DS receives v.Position as the barycentric interpolation of the
+		// three control-point clip-space positions, which is perspective-incorrect for any
+		// tessellated interior vertex.  Re-computing from v.WorldPosition (which IS correct
+		// in world-space) gives the exact clip position the GPU needs.
+		// FrameBuffer::CameraViewProj[0] == ViewProj[0] in VS_PerFrame (same b12, c8).
+		v.Position = mul(FrameBuffer::CameraViewProj[0], float4(v.WorldPosition.xyz, 1.0));
+	}
+
+	return v;
+}
+
+#endif  // defined(SNOW_DEFORMATION) && !defined(VR) && (defined(HULLSHADER) || defined(DOMAINSHADER))

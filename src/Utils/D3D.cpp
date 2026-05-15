@@ -141,9 +141,45 @@ namespace Util
 		}
 	};
 
+	// Diagnostic helper: logs the actual GPU-side cause when a CreateXxxShader call
+	// (or any device method) returns DXGI_ERROR_DEVICE_REMOVED (0x887A0005).
+	// Safe to call on success too (no-ops if device is still alive).
+	static void LogDeviceRemovedReason(ID3D11Device* device, const char* context)
+	{
+		if (!device)
+			return;
+		HRESULT removedReason = device->GetDeviceRemovedReason();
+		if (removedReason == S_OK)
+			return;  // device still healthy
+
+		const char* name = "UNKNOWN";
+		switch ((uint32_t)removedReason) {
+		case 0x887A0005: name = "DXGI_ERROR_DEVICE_REMOVED (cascading)"; break;
+		case 0x887A0006: name = "DXGI_ERROR_DEVICE_HUNG (TDR: GPU hang)"; break;
+		case 0x887A0007: name = "DXGI_ERROR_DEVICE_RESET (driver reset)"; break;
+		case 0x887A0020: name = "DXGI_ERROR_DRIVER_INTERNAL_ERROR"; break;
+		case 0x887A002B: name = "DXGI_ERROR_INVALID_CALL"; break;
+		case 0x887A000A: name = "DXGI_ERROR_REMOTE_OUTOFMEMORY"; break;
+		case 0x8007000E: name = "E_OUTOFMEMORY (GPU OOM)"; break;
+		case 0x80070057: name = "E_INVALIDARG"; break;
+		}
+		logger::error("[DeviceRemoved] context='{}' GetDeviceRemovedReason=0x{:08X} ({})",
+			context, (uint32_t)removedReason, name);
+	}
+
 	ID3D11DeviceChild* CompileShader(const wchar_t* FilePath, const std::vector<std::pair<const char*, const char*>>& Defines, const char* ProgramType, const char* Program)
 	{
 		auto device = globals::d3d::device;
+
+		// Snapshot device-removed state at function entry. If non-zero, the device
+		// died BEFORE this compile/create — points the finger somewhere else.
+		if (device) {
+			HRESULT preExisting = device->GetDeviceRemovedReason();
+			if (preExisting != S_OK) {
+				logger::error("[DeviceRemoved] PRE-EXISTING at CompileShader entry: HRESULT={:#010x}  next shader will fail (will-attempt={})",
+					(uint32_t)preExisting, Util::WStringToString(FilePath));
+			}
+		}
 
 		CustomInclude include;
 
@@ -218,29 +254,105 @@ namespace Util
 		}
 		if (shaderErrors)
 			logger::debug("Shader logs:\n{}", static_cast<char*>(shaderErrors->GetBufferPointer()));
+
+		// --- Proactive AMD RDNA3 debug-strip ---
+		// AMD RDNA3 driver JIT crashes on D3DCOMPILE_DEBUG bytecode inside Create*Shader
+		// (DXGI_ERROR_DRIVER_INTERNAL_ERROR 0x887A0020), permanently removing the device.
+		// Detect AMD once and strip debug/reflection sections before passing the blob to
+		// the driver.  Uses std::once_flag so it is safe on the multi-threaded compile path.
+		static bool s_isAMD = false;
+		static std::once_flag s_amdDetectFlag;
+		std::call_once(s_amdDetectFlag, [device]() {
+			if (!device) return;
+			IDXGIDevice* dxgiDev = nullptr;
+			if (SUCCEEDED(device->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgiDev)))) {
+				IDXGIAdapter* adapter = nullptr;
+				if (SUCCEEDED(dxgiDev->GetAdapter(&adapter))) {
+					DXGI_ADAPTER_DESC adapterDesc{};
+					if (SUCCEEDED(adapter->GetDesc(&adapterDesc))) {
+						s_isAMD = (adapterDesc.VendorId == 0x1002u);
+						logger::info("[AMD detect] VendorId={:#06x} -> isAMD={}", adapterDesc.VendorId, s_isAMD);
+					}
+					adapter->Release();
+				}
+				dxgiDev->Release();
+			}
+		});
+
+		struct BlobRelease { void operator()(ID3DBlob* b) const { if (b) b->Release(); } };
+		std::unique_ptr<ID3DBlob, BlobRelease> strippedBlobGuard;
+		ID3DBlob* effectiveBlob = shaderBlob;
+		if (s_isAMD && (flags & D3DCOMPILE_DEBUG)) {
+			ID3DBlob* stripped = nullptr;
+			constexpr UINT kStripFlags = D3DCOMPILER_STRIP_DEBUG_INFO |
+			                             D3DCOMPILER_STRIP_REFLECTION_DATA |
+			                             D3DCOMPILER_STRIP_TEST_BLOBS;
+			if (SUCCEEDED(D3DStripShader(shaderBlob->GetBufferPointer(),
+			                             shaderBlob->GetBufferSize(), kStripFlags, &stripped))) {
+				strippedBlobGuard.reset(stripped);
+				effectiveBlob = stripped;
+				logger::info("[AMD] Stripped debug info from {} ({} -> {} bytes)", str,
+					shaderBlob->GetBufferSize(), stripped->GetBufferSize());
+			} else {
+				logger::warn("[AMD] D3DStripShader failed for {}; using original blob (may crash)", str);
+			}
+		}
+
 		if (!_stricmp(ProgramType, "ps_5_0")) {
 			ID3D11PixelShader* regShader;
-			DX::ThrowIfFailed(device->CreatePixelShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, &regShader));
+			HRESULT hr = device->CreatePixelShader(effectiveBlob->GetBufferPointer(), effectiveBlob->GetBufferSize(), nullptr, &regShader);
+			if (FAILED(hr)) {
+				logger::error("CreatePixelShader failed: HRESULT {:#010x}  shader={}", (uint32_t)hr, str);
+				LogDeviceRemovedReason(device, str.c_str());
+				DX::ThrowIfFailed(hr);
+			}
 			return regShader;
 		} else if (!_stricmp(ProgramType, "vs_5_0")) {
 			ID3D11VertexShader* regShader;
-			DX::ThrowIfFailed(device->CreateVertexShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, &regShader));
+			HRESULT hr = device->CreateVertexShader(effectiveBlob->GetBufferPointer(), effectiveBlob->GetBufferSize(), nullptr, &regShader);
+			if (FAILED(hr)) {
+				logger::error("CreateVertexShader failed: HRESULT {:#010x}  shader={}", (uint32_t)hr, str);
+				LogDeviceRemovedReason(device, str.c_str());
+				DX::ThrowIfFailed(hr);
+			}
 			return regShader;
 		} else if (!_stricmp(ProgramType, "hs_5_0")) {
 			ID3D11HullShader* regShader;
-			DX::ThrowIfFailed(device->CreateHullShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, &regShader));
+			HRESULT hr = device->CreateHullShader(effectiveBlob->GetBufferPointer(), effectiveBlob->GetBufferSize(), nullptr, &regShader);
+			if (FAILED(hr)) {
+				logger::error("CreateHullShader failed: HRESULT {:#010x}  shader={}", (uint32_t)hr, str);
+				LogDeviceRemovedReason(device, str.c_str());
+				DX::ThrowIfFailed(hr);
+			}
 			return regShader;
 		} else if (!_stricmp(ProgramType, "ds_5_0")) {
 			ID3D11DomainShader* regShader;
-			DX::ThrowIfFailed(device->CreateDomainShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, &regShader));
+			HRESULT hr = device->CreateDomainShader(effectiveBlob->GetBufferPointer(), effectiveBlob->GetBufferSize(), nullptr, &regShader);
+			if (FAILED(hr)) {
+				logger::error("CreateDomainShader failed: HRESULT {:#010x}  shader={}", (uint32_t)hr, str);
+				LogDeviceRemovedReason(device, str.c_str());
+				DX::ThrowIfFailed(hr);
+			}
 			return regShader;
 		} else if (!_stricmp(ProgramType, "cs_5_0")) {
 			ID3D11ComputeShader* regShader;
-			DX::ThrowIfFailed(device->CreateComputeShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, &regShader));
+			{
+				HRESULT hr = device->CreateComputeShader(effectiveBlob->GetBufferPointer(), effectiveBlob->GetBufferSize(), nullptr, &regShader);
+				if (FAILED(hr)) {
+					logger::error("CreateComputeShader (cs_5_0) failed: HRESULT {:#010x}  shader={}", (uint32_t)hr, str);
+					LogDeviceRemovedReason(device, str.c_str());
+					DX::ThrowIfFailed(hr);
+				}
+			}
 			return regShader;
 		} else if (!_stricmp(ProgramType, "cs_4_0")) {
 			ID3D11ComputeShader* regShader;
-			DX::ThrowIfFailed(device->CreateComputeShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, &regShader));
+			HRESULT hr = device->CreateComputeShader(effectiveBlob->GetBufferPointer(), effectiveBlob->GetBufferSize(), nullptr, &regShader);
+			if (FAILED(hr)) {
+				logger::error("CreateComputeShader (cs_4_0) failed: HRESULT {:#010x}  shader={}", (uint32_t)hr, str);
+				LogDeviceRemovedReason(device, str.c_str());
+				DX::ThrowIfFailed(hr);
+			}
 			return regShader;
 		}
 

@@ -8,7 +8,7 @@
 namespace SharedData
 {
 
-#if defined(PSHADER) || defined(CSHADER) || defined(COMPUTESHADER)
+#if defined(PSHADER) || defined(CSHADER) || defined(COMPUTESHADER) || defined(HULLSHADER) || defined(DOMAINSHADER)
 	cbuffer SharedData : register(b5)
 	{
 		float4 WaterData[25];
@@ -264,6 +264,93 @@ namespace SharedData
 		float2 pad;
 	};
 
+	struct BloodDecalGrassSettings
+	{
+		// Row 0
+		uint Enabled;
+		float BloodIntensity;
+		uint EntryCount;
+		uint EnableSurfaceStaining;
+
+		// Row 1
+		float SurfaceHeightThreshold;
+		float SurfaceNormalThreshold;
+		uint EnableSurfaceFlow;
+		float DripReachMultiplier;
+
+		// Row 2
+		float DripRivuletWidth;
+		uint EnableFluidSim;
+		float GridCellSize;
+		float GridWorldSize;
+
+		// Row 3
+		float2 GridWorldOrigin;
+		int2 ArrayOrigin;
+
+		// Row 4
+		int2 ValidMargin;
+		float DeltaTime;
+		float Viscosity;
+
+		// Row 5
+		float DryingRate;
+		float BloodVolumeRate;
+		float EvaporationRate;
+		float RcpGridCellSize;
+
+		// Row 6
+		uint IterationCount;
+		float MomentumStrength;
+		float VelocityDamping;
+		float FlowNoiseScale;
+
+		// Row 7
+		float ParallaxDepthScale;
+		uint EnableParallax;
+		float BloodColorR;
+		float BloodColorG;
+
+		// Row 8
+		float BloodColorB;
+		float pad0;
+		float pad1;
+		float pad2;
+	};
+
+	struct SnowDeformationSettings
+	{
+		// Row 0
+		uint Enabled;
+		float GridWorldSize;
+		float GridCellSize;
+		float RcpGridCellSize;
+
+		// Row 1
+		float GridWorldOriginX;
+		float GridWorldOriginY;
+		int ArrayOriginX;
+		int ArrayOriginY;
+
+		// Row 2
+		float SnowLayerDepth;  // height of the default snow layer (= max compression depth)
+		float SnowContactDepth;
+		float SettlingRate;
+		float RidgeStrength;
+
+		// Row 3
+		float TessellationScale;
+		float TessellationFalloff;
+		float SnowAltitudeMin;
+		float SnowSlopeFactor;
+
+		// Row 4
+		float DeltaTime;
+		float TerrainSurfaceEpsilon;
+		uint  DebugForceDeform;  // 1 = simulate fully-compressed snow (displacement = SnowLayerDepth, no raise)
+		uint  Reserved; // Unused — CPU-rasterized contact grid replaces screen-space detection
+	};
+
 	cbuffer FeatureData : register(b6)
 	{
 		GrassLightingSettings grassLightingSettings;
@@ -282,6 +369,8 @@ namespace SharedData
 		LinearLightingSettings linearLightingSettings;
 		TerrainBlendingSettings terrainBlendingSettings;
 		ExponentialHeightFogSettings exponentialHeightFogSettings;
+		BloodDecalGrassSettings bloodDecalGrassSettings;
+		SnowDeformationSettings snowDeformationSettings;
 	};
 
 	Texture2D<float4> DepthTexture : register(t17);

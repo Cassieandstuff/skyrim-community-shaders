@@ -8,7 +8,7 @@
 				"AUTO_PLUGIN_DEPLOYMENT": "ON"
 			},
 			"environment": {
-				"CommunityShadersOutputDir": "F:/MySkyrimModpack/mods/CommunityShaders;F:/SteamLibrary/steamapps/common/SkyrimVR/Data;F:/SteamLibrary/steamapps/common/Skyrim Special Edition/Data"
+				"CommunityShadersOutputDir": "F:/Modding/Development/MO2 Data/SSE - Dragon Break Project/mods/Community Shaders Stage"
 			},
 			"inherits": "ALL"
 		}

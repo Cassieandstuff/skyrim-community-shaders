@@ -26,7 +26,7 @@ message("Options:")
 option(
     AUTO_PLUGIN_DEPLOYMENT
     "Copy the build output and addons to env:CommunityShadersOutputDir."
-    OFF
+    ON
 )
 option(
     ZIP_TO_DIST

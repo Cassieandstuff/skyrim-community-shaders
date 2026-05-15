@@ -75,6 +75,9 @@ namespace Permutation
 		static const uint GrassSphereNormal = (1 << 3);
 		static const uint IsSun = (1 << 4);
 		static const uint SuppressExternalEmittance = (1 << 5);
+		static const uint IsInstanced = (1 << 6);
+		static const uint InstanceOffsetShift = 7;
+		static const uint InstanceOffsetMask = 0xFFFFFF80;
 	}
 
 	namespace ExtraFeatureFlags

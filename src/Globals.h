@@ -6,6 +6,7 @@ struct CloudShadows;
 struct DynamicCubemaps;
 struct VolumetricShadows;
 struct ExtendedMaterials;
+struct BloodDecalGrass;
 struct GrassCollision;
 struct GrassLighting;
 struct HairSpecular;
@@ -35,6 +36,8 @@ struct Upscaling;
 struct WeatherEditor;
 struct ExponentialHeightFog;
 struct HDRDisplay;
+struct MeshInstancing;
+struct SnowDeformation;
 
 class State;
 class Deferred;
@@ -63,6 +66,7 @@ namespace globals
 		extern DynamicCubemaps dynamicCubemaps;
 		extern VolumetricShadows volumetricShadows;
 		extern ExtendedMaterials extendedMaterials;
+		extern BloodDecalGrass bloodDecalGrass;
 		extern GrassCollision grassCollision;
 		extern GrassLighting grassLighting;
 		extern HairSpecular hairSpecular;
@@ -94,6 +98,8 @@ namespace globals
 		extern WeatherEditor weatherEditor;
 		extern ExponentialHeightFog exponentialHeightFog;
 		extern TruePBR truePBR;
+		extern MeshInstancing meshInstancing;
+		extern SnowDeformation snowDeformation;
 
 		namespace llf
 		{

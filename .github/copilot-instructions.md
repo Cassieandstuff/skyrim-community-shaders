@@ -122,3 +122,7 @@ This file focuses on Copilot-specific guidance while `.claude/CLAUDE.md` provide
 -   Complete troubleshooting guide and development best practices
 
 Refer to `.claude/CLAUDE.md` for detailed technical information not covered in this Copilot-specific summary.
+
+- @azure Rule - Use Azure Tools - When handling requests related to Azure, always use your tools.
+- @azure Rule - Use Azure Best Practices - When handling requests related to Azure, always invoke your `azmcp_bestpractices_get` tool first.
+- @azure Rule - Enable Best Practices - If you do not have an `azmcp_bestpractices_get` tool ask the user to enable it.

@@ -6,6 +6,7 @@
 #include "State.h"
 #include "Utils/D3D.h"
 
+#include "Features/BloodDecalGrass.h"
 #include "Features/DynamicCubemaps.h"
 #include "Features/IBL.h"
 #include "Features/ScreenSpaceGI.h"
@@ -15,6 +16,7 @@
 #include "Features/Upscaling.h"
 #include "Features/VR.h"
 #include "Features/WeatherEditor.h"
+#include "Features/SnowDeformation.h"
 
 #include "Hooks.h"
 
@@ -109,6 +111,7 @@ void Deferred::SetupResources()
 		SetupRenderTarget(NORMALROUGHNESS, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R10G10B10A2_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
 		// Masks
 		SetupRenderTarget(MASKS, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R11G11B10_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
+		// Slot 7 is kNONE — actor mask is now a private BloodDecalGrass UAV texture (u9), not an MRT target.
 
 		// TAA Water Buffers
 		SetupRenderTarget(RE::RENDER_TARGETS::kWATER_1, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R11G11B10_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
@@ -243,7 +246,7 @@ void Deferred::StartDeferred()
 		SPECULAR,
 		REFLECTANCE,
 		MASKS,
-		RE::RENDER_TARGET::kNONE
+		//ACTOR_MASK  // 7: actor mask; Lighting PS writes 1 for !inWorld; blood CS reads as t2
 	};
 
 	for (uint i = 2; i < 8; i++) {
@@ -344,6 +347,12 @@ void Deferred::DeferredPasses()
 	auto& dynamicCubemaps = globals::features::dynamicCubemaps;
 	if (dynamicCubemaps.loaded)
 		dynamicCubemaps.UpdateCubemap();
+
+	// Snow deformation CS pass: projects actor-contact depth into the toroidal grid.
+	// Must run after the geometry pass (depth buffer ready) but before Deferred Composite.
+	auto& snowDeformation = globals::features::snowDeformation;
+	if (snowDeformation.loaded)
+		snowDeformation.DeformationPass();
 
 	auto& ibl = globals::features::ibl;
 

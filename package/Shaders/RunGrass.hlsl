@@ -446,6 +446,10 @@ cbuffer AlphaTestRefCB : register(b11)
 #		include "ExponentialHeightFog/ExponentialHeightFog.hlsli"
 #	endif
 
+#	if defined(BLOOD_DECAL_GRASS)
+#		include "BloodDecalGrass/BloodDecalGrass.hlsli"
+#	endif
+
 #	define LinearSampler SampBaseSampler
 
 #	include "Common/ShadowSampling.hlsli"
@@ -640,6 +644,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #				endif  // SKYLIGHTING
 
 	float3 albedo = baseColor.xyz * vertexColor;
+
+#				if defined(BLOOD_DECAL_GRASS)
+	{
+		float3 bloodInfluence = BloodDecalGrass::GetBloodInfluence(input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust[eyeIndex].xyz);
+		float bloodStrength = saturate(length(bloodInfluence));
+		albedo = lerp(albedo, bloodInfluence, bloodStrength);
+	}
+#				endif
 
 	float3 subsurfaceColor = dirLightColor * dirDetailedShadow * saturate(-dirLightAngle) * Color::VanillaNormalization();
 
@@ -923,6 +935,14 @@ PS_OUTPUT main(PS_INPUT input)
 	diffuseColor += directionalAmbientColor;
 
 	float3 albedo = baseColor.xyz * vertexColor;
+
+#			if defined(BLOOD_DECAL_GRASS)
+	{
+		float3 bloodInfluence = BloodDecalGrass::GetBloodInfluence(input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust[eyeIndex].xyz);
+		float bloodStrength = saturate(length(bloodInfluence));
+		albedo = lerp(albedo, bloodInfluence, bloodStrength);
+	}
+#			endif
 
 	diffuseColor *= albedo;
 	directionalAmbientColor *= albedo;

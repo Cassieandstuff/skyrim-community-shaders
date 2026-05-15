@@ -6,6 +6,7 @@
 #include "Features/ExponentialHeightFog.h"
 #include "Features/ExtendedMaterials.h"
 #include "Features/ExtendedTranslucency.h"
+#include "Features/BloodDecalGrass.h"
 #include "Features/GrassCollision.h"
 #include "Features/GrassLighting.h"
 #include "Features/HDRDisplay.h"
@@ -34,6 +35,8 @@
 #include "Features/VolumetricShadows.h"
 #include "Features/WaterEffects.h"
 #include "Features/WeatherEditor.h"
+#include "Features/MeshInstancing.h"
+#include "Features/SnowDeformation.h"
 #include "Features/WetnessEffects.h"
 #include "Menu.h"
 #include "ShaderCache.h"
@@ -56,6 +59,7 @@ namespace globals
 		DynamicCubemaps dynamicCubemaps{};
 		VolumetricShadows volumetricShadows{};
 		ExtendedMaterials extendedMaterials{};
+		BloodDecalGrass bloodDecalGrass{};
 		GrassCollision grassCollision{};
 		GrassLighting grassLighting{};
 		IBL ibl{};
@@ -87,6 +91,8 @@ namespace globals
 		WeatherEditor weatherEditor{};
 		ExponentialHeightFog exponentialHeightFog{};
 		TruePBR truePBR{};
+		MeshInstancing meshInstancing{};
+		SnowDeformation snowDeformation{};
 
 		namespace llf
 		{
@@ -281,11 +287,11 @@ namespace globals
 	};
 
 	/**
-	 * @brief Hooked OMSetRenderTargets — injects POM offset UAV at slot 7 when in the deferred pass.
+	 * @brief Hooked OMSetRenderTargets — re-injects PomOffset UAV at slot u8 when in the deferred pass.
 	 *
 	 * vtable index 33 for ID3D11DeviceContext::OMSetRenderTargets.
 	 * After Skyrim binds the deferred MRT (clearing all UAVs), this hook re-adds the POM offset
-	 * UAV at slot u7 so the Lighting PS (VR_STEREO_OPT permutation) can write per-pixel parallax
+	 * UAV at slot u8 so the Lighting PS (VR_STEREO_OPT permutation) can write per-pixel parallax
 	 * depth offsets without overloading Reflectance.w.
 	 */
 	struct ID3D11DeviceContext_OMSetRenderTargets
@@ -294,15 +300,14 @@ namespace globals
 		{
 			func(This, NumViews, ppRenderTargetViews, pDepthStencilView);
 
-			// D3D11 handles any SRV/UAV conflict automatically (silently unbinds the UAV when
-			// the same resource is later bound as an SRV), so no NumViews guard is needed.
 			if (globals::deferred->deferredPass) {
 				auto& stereoOpt = globals::features::vr.stereoOpt;
 				if (stereoOpt.loaded) {
-					if (auto* uav = stereoOpt.GetPomOffsetUAV()) {
+					ID3D11UnorderedAccessView* pomUAV = stereoOpt.GetPomOffsetUAV();
+					if (pomUAV) {
 						This->OMSetRenderTargetsAndUnorderedAccessViews(
 							D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL, nullptr, nullptr,
-							7, 1, &uav, nullptr);
+							8, 1, &pomUAV, nullptr);
 					}
 				}
 			}
@@ -377,21 +382,29 @@ namespace globals
 	};
 
 	/**
- * @brief Installs hooks on the Map and Unmap methods of the provided D3D11 device context.
+  * @brief Installs hooks on the Map and Unmap methods of the provided D3D11 device context.
  *
  * This enables interception of resource mapping and unmapping operations for frame buffer caching.
  */
 	void InstallD3DHooks(ID3D11DeviceContext* a_context)
 	{
-		stl::detour_vfunc<14, ID3D11DeviceContext_Map>(a_context);
-		stl::detour_vfunc<15, ID3D11DeviceContext_Unmap>(a_context);
+	stl::detour_vfunc<14, ID3D11DeviceContext_Map>(a_context);
+	stl::detour_vfunc<15, ID3D11DeviceContext_Unmap>(a_context);
 
-		// VR stereo optimization hooks: installed only when stereo reprojection is enabled at startup.
-		// Changing stereoMode at runtime requires a restart; the UI communicates this to the user.
-		if (globals::game::isVR && globals::features::vr.stereoOpt.settings.stereoMode != VRStereoOptimizations::StereoMode::Off) {
-			stl::detour_vfunc<33, ID3D11DeviceContext_OMSetRenderTargets>(a_context);
-			stl::detour_vfunc<36, ID3D11DeviceContext_OMSetDepthStencilState>(a_context);
-			stl::detour_vfunc<53, ID3D11DeviceContext_ClearDepthStencilView>(a_context);
-		}
+	if (globals::features::meshInstancing.loaded)
+		stl::detour_vfunc<12, MeshInstancing::Hooks::ID3D11DeviceContext_DrawIndexed>(a_context);
+
+	if (globals::features::snowDeformation.loaded)
+		stl::detour_vfunc<12, SnowDeformation::Hooks::ID3D11DeviceContext_DrawIndexed>(a_context);
+
+	// VR stereo optimization hooks: installed only when stereo reprojection is enabled at startup.
+	// Changing stereoMode at runtime requires a restart; the UI communicates this to the user.
+	if (globals::game::isVR && globals::features::vr.stereoOpt.settings.stereoMode != VRStereoOptimizations::StereoMode::Off) {
+		// OMSetRenderTargets hook: re-injects PomOffset UAV (u8) after Skyrim clears UAV slots
+		// when binding the deferred MRT. Installed only for VR since POM offset is VR-only.
+		stl::detour_vfunc<33, ID3D11DeviceContext_OMSetRenderTargets>(a_context);
+		stl::detour_vfunc<36, ID3D11DeviceContext_OMSetDepthStencilState>(a_context);
+		stl::detour_vfunc<53, ID3D11DeviceContext_ClearDepthStencilView>(a_context);
 	}
+}
 }
