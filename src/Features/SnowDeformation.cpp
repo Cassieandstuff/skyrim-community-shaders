@@ -223,6 +223,85 @@ void SnowDeformation::DeformationPass()
 }
 
 // =============================================================================
+// DrawSnowLayer
+//   Renders the separate tessellated snow-sheet mesh on top of the terrain.
+//   Called from Deferred::DeferredPasses() after DeformationPass (the CS),
+//   so the deformation field is ready for the DS to sample.
+//   The VS receives world-space vertex positions (updated each frame in Prepass).
+//   The DS reads TerrainHeightTex + GrassCollisionTex + texSnowDeform to
+//   compute the final displaced Z, then reprojects to clip space.
+// =============================================================================
+void SnowDeformation::DrawSnowLayer()
+{
+	if (!loaded || !settings.Enable)
+		return;
+	if (!snowSheetVB || !snowSheetIB || !snowSheetVS || !snowSheetHS || !snowSheetDS || !snowSheetPS)
+		return;
+
+	auto context = globals::d3d::context;
+
+	// ---- Bind depth-stencil state (ALWAYS / write ON for initial test) ----
+	context->OMSetDepthStencilState(snowSheetDSS.get(), 0);
+
+	// ---- Bind shaders ----
+	context->VSSetShader(snowSheetVS.get(), nullptr, 0);
+	context->HSSetShader(snowSheetHS.get(), nullptr, 0);
+	context->DSSetShader(snowSheetDS.get(), nullptr, 0);
+	context->PSSetShader(snowSheetPS.get(), nullptr, 0);
+
+	// ---- Bind constant buffers (b5 SharedData + b6 FeatureData + b12 PerFrame) ----
+	ID3D11Buffer* sharedBufs[2] = {
+		globals::state->sharedDataCB->CB(),
+		globals::state->featureDataCB->CB()
+	};
+	context->HSSetConstantBuffers(5, 2, sharedBufs);
+	context->DSSetConstantBuffers(5, 2, sharedBufs);
+
+	ID3D11Buffer* perFrameBuf = *globals::game::perFrame;
+	context->DSSetConstantBuffers(12, 1, &perFrameBuf);
+
+	// ---- Bind DS textures ----
+	uint32_t readIdx = simFrameIndex % 2;
+
+	ID3D11ShaderResourceView* deformSRV = texSnowDeform[readIdx] ? texSnowDeform[readIdx]->srv.get() : nullptr;
+	ID3D11ShaderResourceView* ridgeSRV  = texSnowRidge ? texSnowRidge->srv.get() : nullptr;
+	ID3D11ShaderResourceView* dsSRVs[3] = {
+		texTerrainHeight ? texTerrainHeight->srv.get() : nullptr,   // t2  — terrain absolute Z
+		deformSRV,                                                      // t106 — deformation field
+		ridgeSRV                                                        // t107 — ridge (unused in DS but kept)
+	};
+	context->DSSetShaderResources(2, 3, dsSRVs);
+
+	// GrassCollision texture at t5
+	auto& grassCollision = globals::features::grassCollision;
+	ID3D11ShaderResourceView* grassSRV = (grassCollision.loaded && grassCollision.collisionTexture)
+		? grassCollision.collisionTexture->srv.get() : nullptr;
+	context->DSSetShaderResources(5, 1, &grassSRV);
+
+	// ---- Bind sampler ----
+	if (deformSampler) {
+		ID3D11SamplerState* samp = deformSampler.get();
+		context->DSSetSamplers(8, 1, &samp);
+	}
+
+	// ---- Set IA state ----
+	uint32_t stride = SNOW_SHEET_STRIDE;
+	uint32_t offset = 0;
+	context->IASetVertexBuffers(0, 1, snowSheetVB.put(), &stride, &offset);
+	context->IASetIndexBuffer(snowSheetIB.get(), DXGI_FORMAT_R16_UINT, 0);
+	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
+
+	// ---- Draw ----
+	context->DrawIndexed(snowSheetIndexCount, 0, 0);
+
+	// ---- Unbind shaders (restore game state) ----
+	context->VSSetShader(nullptr, nullptr, 0);
+	context->HSSetShader(nullptr, nullptr, 0);
+	context->DSSetShader(nullptr, nullptr, 0);
+	context->PSSetShader(nullptr, nullptr, 0);
+}
+
+// =============================================================================
 // BindTessellationShaders
 //   Binds snowHS + snowDS and their constant buffers.
 //   Called from the DrawIndexed hook between base terrain and snow shell draws.
@@ -332,6 +411,33 @@ void SnowDeformation::CompileShaders()
 			snowDS.attach(rawPtr);
 	}
 
+	// Snow sheet VS
+	{
+		if (auto* rawPtr = reinterpret_cast<ID3D11VertexShader*>(
+				Util::CompileShader(L"Data\\Shaders\\SnowDeformation\\SnowSheet.hlsl", {}, "vs_5_0", "SnowSheetVS")))
+			snowSheetVS.attach(rawPtr);
+	}
+
+	// Snow sheet HS
+	{
+		if (auto* rawPtr = reinterpret_cast<ID3D11HullShader*>(
+				Util::CompileShader(L"Data\\Shaders\\SnowDeformation\\SnowSheet.hlsl", {}, "hs_5_0", "SnowSheetHS")))
+			snowSheetHS.attach(rawPtr);
+	}
+
+	// Snow sheet DS
+	{
+		if (auto* rawPtr = reinterpret_cast<ID3D11DomainShader*>(
+				Util::CompileShader(L"Data\\Shaders\\SnowDeformation\\SnowSheet.hlsl", {}, "ds_5_0", "SnowSheetDS")))
+			snowSheetDS.attach(rawPtr);
+	}
+
+	// Snow sheet PS
+	{
+		if (auto* rawPtr = reinterpret_cast<ID3D11PixelShader*>(
+				Util::CompileShader(L"Data\\Shaders\\SnowDeformation\\SnowSheet.hlsl", {}, "ps_5_0", "SnowSheetPS")))
+			snowSheetPS.attach(rawPtr);
+	}
 }
 
 // =============================================================================
@@ -472,6 +578,65 @@ void SnowDeformation::SetupResources()
 		lessEqualDSS = std::move(newDSS);
 	}
 
+	// Snow sheet: ALWAYS depth test with write ON (for initial test — shows snow everywhere)
+	{
+		D3D11_DEPTH_STENCIL_DESC dssDesc{};
+		dssDesc.DepthEnable    = TRUE;
+		dssDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+		dssDesc.DepthFunc      = D3D11_COMPARISON_ALWAYS;
+		dssDesc.StencilEnable  = FALSE;
+		winrt::com_ptr<ID3D11DepthStencilState> newDSS;
+		DX::ThrowIfFailed(device->CreateDepthStencilState(&dssDesc, newDSS.put()));
+		snowSheetDSS = std::move(newDSS);
+	}
+
+	// Snow sheet vertex buffer (dynamic, updated each frame in Prepass)
+	{
+		D3D11_BUFFER_DESC vbDesc{};
+		vbDesc.ByteWidth      = SNOW_SHEET_TOTAL_VERTS * SNOW_SHEET_STRIDE;
+		vbDesc.Usage          = D3D11_USAGE_DYNAMIC;
+		vbDesc.BindFlags      = D3D11_BIND_VERTEX_BUFFER;
+		vbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+		D3D11_SUBRESOURCE_DATA initData{};
+		initData.pSysMem = calloc(SNOW_SHEET_TOTAL_VERTS, SNOW_SHEET_STRIDE);
+		DX::ThrowIfFailed(device->CreateBuffer(&vbDesc, &initData, snowSheetVB.put()));
+		free((void*)initData.pSysMem);
+	}
+
+	// Snow sheet index buffer (immutable, generated once)
+	{
+		uint32_t numIndices = SNOW_SHEET_QUADS * SNOW_SHEET_QUADS * 6;
+		snowSheetIndexCount = numIndices;
+
+		auto* idx = new uint16_t[numIndices];
+		uint32_t out = 0;
+		for (uint32_t row = 0; row < SNOW_SHEET_QUADS; row++) {
+			for (uint32_t col = 0; col < SNOW_SHEET_QUADS; col++) {
+				uint32_t tl = row * SNOW_SHEET_VERTS + col;
+				uint32_t tr = tl + 1;
+				uint32_t bl = tl + SNOW_SHEET_VERTS;
+				uint32_t br = bl + 1;
+				idx[out++] = (uint16_t)tl;
+				idx[out++] = (uint16_t)tr;
+				idx[out++] = (uint16_t)bl;
+				idx[out++] = (uint16_t)tr;
+				idx[out++] = (uint16_t)br;
+				idx[out++] = (uint16_t)bl;
+			}
+		}
+
+		D3D11_BUFFER_DESC ibDesc{};
+		ibDesc.ByteWidth = numIndices * sizeof(uint16_t);
+		ibDesc.Usage     = D3D11_USAGE_IMMUTABLE;
+		ibDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+
+		D3D11_SUBRESOURCE_DATA initData{};
+		initData.pSysMem = idx;
+		DX::ThrowIfFailed(device->CreateBuffer(&ibDesc, &initData, snowSheetIB.put()));
+		delete[] idx;
+	}
+
 	CompileShaders();
 }
 
@@ -480,6 +645,10 @@ void SnowDeformation::ClearShaderCache()
 	snowDeformCS = nullptr;
 	snowHS       = nullptr;
 	snowDS       = nullptr;
+	snowSheetVS  = nullptr;
+	snowSheetHS  = nullptr;
+	snowSheetDS  = nullptr;
+	snowSheetPS  = nullptr;
 	lessEqualDSS = nullptr;
 	CompileShaders();
 }
@@ -526,6 +695,27 @@ void SnowDeformation::Prepass()
 	currentGridWorldOriginY = (cellIDY - (int)GRID_DIM / 2) * GRID_CELL_SIZE;
 
 	UpdateTerrainHeight();
+
+	// Update snow sheet vertex positions (world-space grid)
+	if (snowSheetVB) {
+		D3D11_MAPPED_SUBRESOURCE mapped;
+		HRESULT hr = globals::d3d::context->Map(snowSheetVB.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+		if (SUCCEEDED(hr)) {
+			float* verts = static_cast<float*>(mapped.pData);
+			float stepX = GRID_WORLD_SIZE / (float)SNOW_SHEET_QUADS;
+			float stepY = GRID_WORLD_SIZE / (float)SNOW_SHEET_QUADS;
+			for (uint32_t row = 0; row < SNOW_SHEET_VERTS; row++) {
+				float wy = currentGridWorldOriginY + (float)row * stepY;
+				for (uint32_t col = 0; col < SNOW_SHEET_VERTS; col++) {
+					float wx = currentGridWorldOriginX + (float)col * stepX;
+					*verts++ = wx;
+					*verts++ = wy;
+					*verts++ = 0.0f;  // Z=0; DS adds terrain height + offset
+				}
+			}
+			globals::d3d::context->Unmap(snowSheetVB.get(), 0);
+		}
+	}
 }
 
 void SnowDeformation::DrawSettings()

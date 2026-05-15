@@ -351,8 +351,10 @@ void Deferred::DeferredPasses()
 	// Snow deformation CS pass: projects actor-contact depth into the toroidal grid.
 	// Must run after the geometry pass (depth buffer ready) but before Deferred Composite.
 	auto& snowDeformation = globals::features::snowDeformation;
-	if (snowDeformation.loaded)
+	if (snowDeformation.loaded) {
 		snowDeformation.DeformationPass();
+		snowDeformation.DrawSnowLayer();
+	}
 
 	auto& ibl = globals::features::ibl;
 

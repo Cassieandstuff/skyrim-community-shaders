@@ -105,6 +105,21 @@ public:
 	// the tessellated snow shell draw. Created unconditionally in SetupResources.
 	winrt::com_ptr<ID3D11DepthStencilState>  lessEqualDSS;
 
+	// Snow sheet layer resources
+	static constexpr uint32_t SNOW_SHEET_QUADS = 256;          // quads per axis
+	static constexpr uint32_t SNOW_SHEET_VERTS = SNOW_SHEET_QUADS + 1;  // 257 verts per axis
+	static constexpr uint32_t SNOW_SHEET_STRIDE = 12;          // float3 position
+	static constexpr uint32_t SNOW_SHEET_TOTAL_VERTS = SNOW_SHEET_VERTS * SNOW_SHEET_VERTS;
+
+	winrt::com_ptr<ID3D11Buffer>             snowSheetVB;
+	winrt::com_ptr<ID3D11Buffer>             snowSheetIB;
+	uint32_t                                 snowSheetIndexCount = 0;
+	winrt::com_ptr<ID3D11VertexShader>       snowSheetVS;
+	winrt::com_ptr<ID3D11HullShader>         snowSheetHS;
+	winrt::com_ptr<ID3D11DomainShader>       snowSheetDS;
+	winrt::com_ptr<ID3D11PixelShader>        snowSheetPS;
+	winrt::com_ptr<ID3D11DepthStencilState>  snowSheetDSS;  // ALWAYS / write ON
+
 	// Grid management (toroidal rolling window)
 	int     prevCellIDX            = INT_MAX;
 	int     prevCellIDY            = INT_MAX;
@@ -131,6 +146,7 @@ public:
 	CommonBufferData GetCommonBufferData();
 	void             UpdateTerrainHeight();
 	void             DeformationPass();
+	void             DrawSnowLayer();
 	void             BindTessellationShaders();
 	void             RestoreTessellationShaders();
 	void             CompileShaders();
