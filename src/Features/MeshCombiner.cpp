@@ -334,8 +334,9 @@ RE::NiPointer<RE::BSTriShape> MeshCombiner::BuildCombinedMesh(
 	modelData.modelBound.radius = boundRadius;
 
 	// ---- BSLightingShaderProperty: clone from first source ----
-	auto* srcProp = sources[0].geometry->GetGeometryRuntimeData().shaderProperty.get();
-	if (srcProp && srcProp->material) {
+	auto* srcLighting = netimmerse_cast<RE::BSLightingShaderProperty*>(
+		sources[0].geometry->GetGeometryRuntimeData().shaderProperty.get());
+	if (srcLighting && srcLighting->material) {
 		using BSLightingShaderProperty_Ctor_t =
 			RE::BSShaderProperty* (*)(RE::BSLightingShaderProperty*);
 		static const REL::Relocation<BSLightingShaderProperty_Ctor_t>
@@ -345,11 +346,8 @@ RE::NiPointer<RE::BSTriShape> MeshCombiner::BuildCombinedMesh(
 			memmgr->Allocate(sizeof(RE::BSLightingShaderProperty), 0, false));
 		if (prop) {
 			BSLightingShaderProperty_Ctor(prop);
-			prop->SetMaterial(srcProp->material, false);
-
-			using F = RE::BSShaderProperty::EShaderPropertyFlag8;
-			prop->SetFlags(F::kCastShadows, true);
-			prop->SetFlags(F::kReceiveShadows, true);
+			prop->CopyMembers(srcLighting);
+			prop->SetMaterial(srcLighting->material, false);
 
 			geomData.shaderProperty = RE::NiPointer<RE::BSShaderProperty>(prop);
 		}
