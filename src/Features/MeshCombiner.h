@@ -88,7 +88,9 @@ struct MeshCombiner : Feature
 	RE::NiPointer<RE::BSTriShape> BuildCombinedMesh(
 		const CombineKey& key,
 		const eastl::vector<SourceMesh>& sources,
-		RE::NiNode* parent);
+		uint32_t startIndex,
+		RE::NiNode* parent,
+		uint32_t& outSourcesMerged);
 	void DestroyCombines();
 	void PruneDetachedCombines();
 	void SetOriginalVisibility(bool visible);

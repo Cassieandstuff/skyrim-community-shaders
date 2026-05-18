@@ -111,19 +111,28 @@ void MeshCombiner::RebuildCombines()
 		if (!parent)
 			continue;
 
-		auto combined = BuildCombinedMesh(key, sources, parent);
-		if (!combined)
-			continue;
+		uint32_t cursor = 0;
+		while (cursor < sources.size()) {
+			uint32_t sourcesMerged = 0;
+			auto combined = BuildCombinedMesh(key, sources, cursor, parent, sourcesMerged);
+			if (!combined || sourcesMerged == 0) {
+				// Source at `cursor` couldn't be merged (e.g. exceeds 65535 verts on its own).
+				// Skip it and continue so we don't infinite-loop or stop the whole group.
+				cursor++;
+				continue;
+			}
 
-		ActiveCombine ac;
-		ac.triShape = combined;
-		ac.parent = RE::NiPointer<RE::NiNode>(parent);
-		for (auto& src : sources)
-			ac.sourceGeometries.push_back(src.geometry);
+			ActiveCombine ac;
+			ac.triShape = combined;
+			ac.parent = RE::NiPointer<RE::NiNode>(parent);
+			for (uint32_t i = 0; i < sourcesMerged; i++)
+				ac.sourceGeometries.push_back(sources[cursor + i].geometry);
 
-		activeCombines.push_back(std::move(ac));
-		stat_totalCombines++;
-		stat_totalSourceMeshes += static_cast<uint32_t>(sources.size());
+			activeCombines.push_back(std::move(ac));
+			stat_totalCombines++;
+			stat_totalSourceMeshes += sourcesMerged;
+			cursor += sourcesMerged;
+		}
 	}
 
 	if (settings.HideOriginals)
@@ -201,16 +210,38 @@ void MeshCombiner::CollectGeometry(RE::TESObjectCELL* cell,
 RE::NiPointer<RE::BSTriShape> MeshCombiner::BuildCombinedMesh(
 	const CombineKey& key,
 	const eastl::vector<SourceMesh>& sources,
-	RE::NiNode* parent)
+	uint32_t startIndex,
+	RE::NiNode* parent,
+	uint32_t& outSourcesMerged)
 {
+	outSourcesMerged = 0;
+	if (startIndex >= sources.size())
+		return nullptr;
 	auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
 	auto* memmgr = RE::MemoryManager::GetSingleton();
 	if (!renderer || !memmgr)
 		return nullptr;
 
-	const uint32_t vertexStride = sources[0].geometry->GetGeometryRuntimeData().vertexDesc.GetSize();
+	auto& vertexDesc = sources[startIndex].geometry->GetGeometryRuntimeData().vertexDesc;
+	const uint32_t vertexStride = vertexDesc.GetSize();
 	if (vertexStride == 0 || vertexStride > 128)
 		return nullptr;
+
+	// Tangent frame attribute offsets — same for every source in the group (same vertexDesc).
+	// Normal+tangent are 4 SNORM8 bytes each; the 4th component of position/normal/tangent
+	// stores bitangent.x/y/z respectively, so we must transform N, T, and B together.
+	const bool hasNormal = vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_NORMAL);
+	const bool hasTangent = vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_TANGENT);
+	const uint32_t normalOffset = vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::VA_NORMAL);
+	const uint32_t tangentOffset = vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::VA_BINORMAL);
+
+	auto encodeSnorm8 = [](float v) -> int8_t {
+		return static_cast<int8_t>(std::clamp(v * 127.0f, -127.0f, 127.0f));
+	};
+	auto normalize = [](RE::NiPoint3 v) -> RE::NiPoint3 {
+		float len = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+		return len > 1e-6f ? RE::NiPoint3{ v.x / len, v.y / len, v.z / len } : RE::NiPoint3{ 0, 0, 1 };
+	};
 
 	// First pass: compute totals and find bounding box
 	uint32_t totalVerts = 0;
@@ -218,14 +249,17 @@ RE::NiPointer<RE::BSTriShape> MeshCombiner::BuildCombinedMesh(
 	float minX = FLT_MAX, minY = FLT_MAX, minZ = FLT_MAX;
 	float maxX = -FLT_MAX, maxY = -FLT_MAX, maxZ = -FLT_MAX;
 
-	for (auto& src : sources) {
+	uint32_t sourcesMerged = 0;
+	for (uint32_t i = startIndex; i < sources.size(); i++) {
+		auto& src = sources[i];
 		if (totalVerts + src.vertexCount > 65535)
 			break;
 		totalVerts += src.vertexCount;
 		totalIndices += src.triangleCount * 3;
+		sourcesMerged++;
 	}
 
-	if (totalVerts < 3 || totalIndices < 3)
+	if (totalVerts < 3 || totalIndices < 3 || sourcesMerged == 0)
 		return nullptr;
 
 	// Allocate combined buffers
@@ -236,7 +270,8 @@ RE::NiPointer<RE::BSTriShape> MeshCombiner::BuildCombinedMesh(
 	uint32_t vertOffset = 0;
 	uint32_t idxOffset = 0;
 
-	for (auto& src : sources) {
+	for (uint32_t srcIdx = startIndex; srcIdx < startIndex + sourcesMerged; srcIdx++) {
+		auto& src = sources[srcIdx];
 		if (vertOffset + src.vertexCount > totalVerts)
 			break;
 
@@ -250,11 +285,33 @@ RE::NiPointer<RE::BSTriShape> MeshCombiner::BuildCombinedMesh(
 			const uint8_t* srcV = srcVerts + v * vertexStride;
 			std::memcpy(dst, srcV, vertexStride);
 
-			// Transform position (float4 at offset 0)
 			float* pos = reinterpret_cast<float*>(dst);
-			RE::NiPoint3 localPos{ pos[0], pos[1], pos[2] };
-			RE::NiPoint3 worldPos = world.rotate * (localPos * world.scale) + world.translate;
 
+			// Read all model-space values from the freshly-copied vertex BEFORE writing
+			// anything back. The bitangent is split across pos.w / normal.w / tangent.w.
+			RE::NiPoint3 posLocal{ pos[0], pos[1], pos[2] };
+			float bitX_local = pos[3];
+
+			int8_t* nBytes = nullptr;
+			int8_t* tBytes = nullptr;
+			RE::NiPoint3 normalLocal{};
+			RE::NiPoint3 tangentLocal{};
+			float bitY_local = 0.0f;
+			float bitZ_local = 0.0f;
+
+			if (hasNormal) {
+				nBytes = reinterpret_cast<int8_t*>(dst + normalOffset);
+				normalLocal = { nBytes[0] / 127.0f, nBytes[1] / 127.0f, nBytes[2] / 127.0f };
+				bitY_local = nBytes[3] / 127.0f;
+			}
+			if (hasTangent) {
+				tBytes = reinterpret_cast<int8_t*>(dst + tangentOffset);
+				tangentLocal = { tBytes[0] / 127.0f, tBytes[1] / 127.0f, tBytes[2] / 127.0f };
+				bitZ_local = tBytes[3] / 127.0f;
+			}
+
+			// Transform position (point: rotate + scale + translate)
+			RE::NiPoint3 worldPos = world.rotate * (posLocal * world.scale) + world.translate;
 			pos[0] = worldPos.x;
 			pos[1] = worldPos.y;
 			pos[2] = worldPos.z;
@@ -265,6 +322,27 @@ RE::NiPointer<RE::BSTriShape> MeshCombiner::BuildCombinedMesh(
 			maxX = std::max(maxX, worldPos.x);
 			maxY = std::max(maxY, worldPos.y);
 			maxZ = std::max(maxZ, worldPos.z);
+
+			// Transform tangent frame (direction vectors: rotate only, then renormalize).
+			// Uniform scale doesn't change directions; non-uniform statics are rare and the
+			// renormalize keeps non-uniform cases approximately correct without an inverse-transpose.
+			if (hasNormal) {
+				auto N = normalize(world.rotate * normalLocal);
+				nBytes[0] = encodeSnorm8(N.x);
+				nBytes[1] = encodeSnorm8(N.y);
+				nBytes[2] = encodeSnorm8(N.z);
+
+				if (hasTangent) {
+					auto T = normalize(world.rotate * tangentLocal);
+					auto B = normalize(world.rotate * RE::NiPoint3{ bitX_local, bitY_local, bitZ_local });
+					tBytes[0] = encodeSnorm8(T.x);
+					tBytes[1] = encodeSnorm8(T.y);
+					tBytes[2] = encodeSnorm8(T.z);
+					pos[3] = B.x;
+					nBytes[3] = encodeSnorm8(B.y);
+					tBytes[3] = encodeSnorm8(B.z);
+				}
+			}
 		}
 
 		for (uint32_t i = 0; i < srcIndexCount; i++)
@@ -333,9 +411,9 @@ RE::NiPointer<RE::BSTriShape> MeshCombiner::BuildCombinedMesh(
 	modelData.modelBound.center = RE::NiPoint3{ 0.0f, 0.0f, 0.0f };
 	modelData.modelBound.radius = boundRadius;
 
-	// ---- BSLightingShaderProperty: clone from first source ----
+	// ---- BSLightingShaderProperty: clone from first merged source ----
 	auto* srcLighting = netimmerse_cast<RE::BSLightingShaderProperty*>(
-		sources[0].geometry->GetGeometryRuntimeData().shaderProperty.get());
+		sources[startIndex].geometry->GetGeometryRuntimeData().shaderProperty.get());
 	if (srcLighting && srcLighting->material) {
 		using BSLightingShaderProperty_Ctor_t =
 			RE::BSShaderProperty* (*)(RE::BSLightingShaderProperty*);
@@ -346,8 +424,12 @@ RE::NiPointer<RE::BSTriShape> MeshCombiner::BuildCombinedMesh(
 			memmgr->Allocate(sizeof(RE::BSLightingShaderProperty), 0, false));
 		if (prop) {
 			BSLightingShaderProperty_Ctor(prop);
-			prop->CopyMembers(srcLighting);
 			prop->SetMaterial(srcLighting->material, false);
+			prop->flags = srcLighting->flags;
+			prop->alpha = srcLighting->alpha;
+			prop->emissiveMult = srcLighting->emissiveMult;
+			prop->specularLODFade = srcLighting->specularLODFade;
+			prop->envmapLODFade = srcLighting->envmapLODFade;
 
 			geomData.shaderProperty = RE::NiPointer<RE::BSShaderProperty>(prop);
 		}
@@ -367,6 +449,7 @@ RE::NiPointer<RE::BSTriShape> MeshCombiner::BuildCombinedMesh(
 	parent->UpdateDownwardPass(updateData, 0);
 
 	stat_totalVerticesCombined += totalVerts;
+	outSourcesMerged = sourcesMerged;
 
 	return RE::NiPointer<RE::BSTriShape>(tri);
 }
