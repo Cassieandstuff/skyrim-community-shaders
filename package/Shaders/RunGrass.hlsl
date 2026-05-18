@@ -470,6 +470,14 @@ cbuffer PerMaterial : register(b1)
 
 #		include "GrassLighting/GrassLighting.hlsli"
 
+#		if defined(SNOW_COVER)
+#			undef SNOW
+#			undef PROJECTED_UV
+#			undef SPARKLE
+#			define BASIC_SNOW_COVER
+#			include "SnowCover/SnowCover.hlsli"
+#		endif
+
 PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 {
 	PS_OUTPUT psout = (PS_OUTPUT)0;
@@ -642,6 +650,27 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float vertexAO = max(max(vertexColor.r, vertexColor.g), vertexColor.b);
 	float skylightingDiffuse = Skylighting::GetVertexSkylightingDiffuse(positionMSSkylight, normal, vertexAO);
 #				endif  // SKYLIGHTING
+
+#				if defined(SNOW_COVER)
+	{
+#					if defined(SKYLIGHTING)
+		float snowOcclusion = smoothstep(0, 0.75, skylightingDiffuse) * 0.55;
+#					else
+		float snowOcclusion = 0.55;
+#					endif
+		if (SharedData::snowCoverSettings.EnableSnowCover) {
+			if (SharedData::snowCoverSettings.EnableExpensiveFoliage) {
+				float rx;
+				float ry;
+				TexBaseSampler.GetDimensions(rx, ry);
+				snowOcclusion = max(snowOcclusion, 1 - TexBaseSampler.SampleBias(SampBaseSampler, input.TexCoord.xy - float2(0, 1. / ry), SharedData::MipBias).a);
+			}
+			float viewDist = mul(FrameBuffer::CameraView[eyeIndex], float4(input.WorldPosition.xyz, 1)).z;
+			snowOcclusion *= saturate(input.WorldPosition.z - SharedData::GetWaterData(input.WorldPosition.xyz, eyeIndex).w);
+			SnowCover::ApplySnowFoliage(baseColor.xyz, float3(input.TexCoord.xy, normal.z * 0.5 + 0.5), input.WorldPosition.xyz + FrameBuffer::CameraPosAdjust[eyeIndex].xyz, snowOcclusion, viewDist);
+		}
+	}
+#				endif
 
 	float3 albedo = baseColor.xyz * vertexColor;
 

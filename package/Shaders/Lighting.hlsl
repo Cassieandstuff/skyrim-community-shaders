@@ -29,6 +29,16 @@
 #	define LOD
 #endif
 
+#if defined(SKINNED) || defined(SKIN) || defined(EYE) || defined(HAIR)
+#	undef SNOW_COVER
+#endif
+
+#if defined(SNOW_COVER)
+#	if defined(TRUE_PBR)
+#		define GLINT
+#	endif
+#endif
+
 struct VS_INPUT
 {
 	float4 Position: POSITION0;
@@ -946,6 +956,11 @@ float GetSnowParameterY(float texProjTmp, float alpha)
 
 #	if defined(TERRAIN_VARIATION)
 #		include "TerrainVariation/TerrainVariation.hlsli"
+#	endif
+
+#	if defined(SNOW_COVER)
+#		undef SNOW
+#		include "SnowCover/SnowCover.hlsli"
 #	endif
 
 #	if defined(EXTENDED_TRANSLUCENCY) && !(defined(LOD) || defined(SKIN) || defined(HAIR) || defined(EYE) || defined(TREE_ANIM) || defined(LODOBJECTSHD) || defined(LODOBJECTS) || defined(DEPTH_WRITE_DECALS))
@@ -1894,6 +1909,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float lodLandNoiseParameter = GetLodLandBlendParameter(baseColor.xyz);
 	float noise = TexLandLodNoiseSampler.Sample(SampLandLodNoiseSampler, uv * 3.0.xx).x;
 	float lodLandNoiseMultiplier = GetLodLandBlendMultiplier(lodLandNoiseParameter, noise);
+#			if defined(SNOW_COVER)
+	if (!SharedData::snowCoverSettings.EnableSnowCover)
+#			endif
 	baseColor.xyz *= lodLandNoiseMultiplier;
 	normal.xyz *= 2;
 	normal.w = 1;
@@ -2391,6 +2409,101 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	float4 waterData = SharedData::GetWaterData(input.WorldPosition.xyz, eyeIndex);
 	float waterHeight = waterData.w;
+
+#	if defined(SNOW_COVER)
+#		if defined(SKYLIGHTING)
+	float snowOcclusion = inWorld ? smoothstep(0, 0.75, SphericalHarmonics::Unproject(skylightingSH, float3(0, 0, 1))) : 0;
+#		else
+	float snowOcclusion = inWorld;
+#		endif
+
+#		if defined(DO_ALPHA_TEST) && defined(LOD_BLENDING) && defined(SOFT_LIGHTING)
+	float rx;
+	float ry;
+	TexColorSampler.GetDimensions(rx, ry);
+	float hasAlpha = 1 - TexColorSampler.SampleLevel(SampColorSampler, uv, 6).a;
+	if (hasAlpha > 0.001) {
+		snowOcclusion = 1 - TexColorSampler.Sample(SampColorSampler, uv - float2(0, 2. / ry)).a;
+	}
+#		endif
+
+	float3 adjustedWorldPos = (input.WorldPosition + FrameBuffer::CameraPosAdjust[eyeIndex]).xyz;
+
+	float snowFactor = 0;
+#		if defined(LOD_BLENDING) && (defined(LODLANDSCAPE) || defined(LODLANDNOISE) || defined(LODOBJECTS) || defined(LODOBJECTSHD))
+	float3 preSnowBaseColor = material.BaseColor;
+#		endif
+	if (SharedData::snowCoverSettings.EnableSnowCover
+#		if !defined(TREE_ANIM)
+		&& !(Permutation::ExtraFeatureDescriptor & Permutation::ExtraFeatureFlags::NoSnow) && !(Permutation::VertexShaderDescriptor & Permutation::LightingFlags::Skinned)
+#		endif
+	) {
+#		if defined(TRUE_PBR)
+		if (glintParameters.y < 0.01)
+			material.GlintLogMicrofacetDensity = 1;
+#			if defined(LANDSCAPE)
+		float disp = sh0;
+#			elif defined(EMAT)
+		float disp = (sh0 - 0.5) * displacementParams.HeightScale;
+#			else
+	float disp = (sh0 - 0.5);
+#			endif
+#		elif defined(LANDSCAPE) && defined(EMAT)
+		float disp = sh0;
+#		elif defined(EMAT)
+		float disp = (sh0 - 0.5);
+#		else
+		float disp = 0;
+#		endif
+		float3 snowNormal = worldNormal;
+#		if defined(TREE_ANIM)
+		snowNormal.z = max(snowNormal.z, 0.75);
+		snowNormal = normalize(snowNormal);
+#		endif
+#		if defined(TREE_ANIM)
+		snowOcclusion *= SharedData::snowCoverSettings.TreeSnowAmount;
+		if (SharedData::snowCoverSettings.AffectTreeTint && !(Permutation::ExtraFeatureDescriptor & Permutation::ExtraFeatureFlags::NoTint))
+			SnowCover::ApplyFoliageColor(material.BaseColor, SnowCover::GetEnvironmentalMultiplier(adjustedWorldPos));
+
+#		endif
+#		if defined(TRUE_PBR)
+		snowFactor = SnowCover::ApplySnowPBR(material, snowNormal, snowFactor, disp, adjustedWorldPos, snowOcclusion, input.WorldPosition.z - waterHeight, viewPosition.z, uv - uvOriginal);
+#		else
+		snowFactor = SnowCover::ApplySnow(material, snowNormal, disp, adjustedWorldPos, snowOcclusion, input.WorldPosition.z - waterHeight, viewPosition.z, uv - uvOriginal);
+#		endif
+		if (snowFactor > 0) {
+			float3 sd = FrameBuffer::ViewToWorld(-float3(ddx_fine(snowFactor), ddy_fine(snowFactor), 0), false, eyeIndex);
+#		if defined(TREE_ANIM)
+			worldNormal = normalize(lerp(worldNormal, float3(0, 0, 1), snowFactor * 0.5) + sd);
+#		elif defined(MODELSPACENORMALS) && !defined(SKINNED)
+			worldNormal = normalize(lerp(worldNormal, snowNormal, snowFactor * 0.75) + sd);
+#		else
+			worldNormal = normalize(lerp(worldNormal, normalize(mul(tbn, snowNormal)), snowFactor * 0.75) + sd);
+#		endif
+#		if defined(GLINT)
+			float glintNoise = Random::R1Modified(float(SharedData::FrameCount), (Random::pcg2d(uint2(input.Position.xy)) / 4294967296.0).x);
+			Glints::PrecomputeGlints(glintNoise, uvOriginal, ddx(uvOriginal), ddy(uvOriginal), material.GlintScreenSpaceScale, material.GlintCache);
+#		endif
+		}
+#		if defined(LODLANDNOISE)
+		material.BaseColor *= snowFactor + (1 - snowFactor) * lodLandNoiseMultiplier;
+#		endif
+#		if defined(LOD_LAND_BLEND) && defined(TRUE_PBR)
+		lodLandFadeFactor = snowFactor + (1 - snowFactor) * lodLandFadeFactor;
+		lodLandColor.rgb = lerp(lodLandColor, material.BaseColor * Color::PBRLightingScale, snowFactor);
+#		endif
+#		if defined(LOD_BLENDING)
+#			if defined(LODLANDSCAPE) || defined(LODLANDNOISE)
+		float3 lodSnowAdjusted = pow(abs(material.BaseColor), SharedData::lodBlendingSettings.LODTerrainGamma) * SharedData::lodBlendingSettings.LODTerrainBrightness;
+		material.BaseColor = lerp(preSnowBaseColor, lodSnowAdjusted, snowFactor);
+#			elif defined(LODOBJECTS) || defined(LODOBJECTSHD)
+		float3 lodSnowAdjusted = pow(abs(material.BaseColor), SharedData::lodBlendingSettings.LODObjectSnowGamma) * SharedData::lodBlendingSettings.LODObjectSnowBrightness;
+		material.BaseColor = lerp(preSnowBaseColor, lodSnowAdjusted, snowFactor);
+#			endif
+#		endif
+	}
+
+#	endif  // SNOW_COVER
 
 	float waterRoughnessSpecular = 1;
 
@@ -3000,6 +3113,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		material.BaseColor = lerp(material.BaseColor, bloodTint / max(bloodStr, 0.001), bloodStr);
 #	endif
 
+#	if defined(SNOW_COVER) && !defined(MODELSPACENORMALS)
+#		if defined(TREE_ANIM)
+	vertexColor.rgb = snowFactor * 0.75 + (1 - snowFactor * 0.75) * vertexColor.rgb;
+#		else
+	vertexColor.rgb = snowFactor + (1 - snowFactor) * vertexColor.rgb;
+#		endif
+#	endif
+
 	float4 color = 0;
 
 	indirectContext = CreateIndirectLightingContext(ambientNormal, vertexNormal.xyz, viewDirection);
@@ -3360,139 +3481,3 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	return psout;
 }
 #endif  // PSHADER
-
-// ============================================================================
-// Snow Deformation Hull + Domain Shaders
-// Compiled at runtime via Util::CompileShader with:
-//   target  hs_5_0 / ds_5_0
-//   defines LANDSCAPE, VC, SNOW_DEFORMATION
-//   (HULLSHADER / DOMAINSHADER injected automatically by CompileShader)
-// cbuffers available: SharedData b5, FeatureData b6, FrameBuffer::PerFrame b12
-// SRVs   : t106 = deformation field (R16_FLOAT, ping-pong read side)
-//          t107 = ridge field       (R16_FLOAT)
-// Sampler: s8   = bilinear WRAP
-// ============================================================================
-#if defined(SNOW_DEFORMATION) && !defined(VR) && (defined(HULLSHADER) || defined(DOMAINSHADER))
-
-Texture2D<float>  texSnowDeformDS : register(t106);
-Texture2D<float>  texSnowRidgeDS  : register(t107);
-SamplerState      deformSamplerDS : register(s8);
-
-// ── Patch-constant output ────────────────────────────────────────────────────
-struct SnowHS_PatchConstant
-{
-	float Edges[3]   : SV_TessFactor;
-	float Inside[1]  : SV_InsideTessFactor;
-};
-
-// ── Patch-constant function: distance-adaptive tessellation ─────────────────
-SnowHS_PatchConstant SnowHS_PatchConstantFunc(
-	InputPatch<VS_OUTPUT, 3> patch,
-	uint                     PatchID : SV_PrimitiveID)
-{
-	SnowHS_PatchConstant output;
-
-	// Camera-relative patch centre — camera is at the origin in this space.
-	float3 patchCenter = (patch[0].WorldPosition.xyz +
-	                      patch[1].WorldPosition.xyz +
-	                      patch[2].WorldPosition.xyz) / 3.0;
-	float dist = length(patchCenter);
-
-	SharedData::SnowDeformationSettings s = SharedData::snowDeformationSettings;
-
-	float maxFactor = s.TessellationScale * 64.0;
-	float t         = saturate(dist / max(s.TessellationFalloff, 1.0));
-	float factor    = max(lerp(maxFactor, 1.0, t), 1.0);
-
-	output.Edges[0]  = factor;
-	output.Edges[1]  = factor;
-	output.Edges[2]  = factor;
-	output.Inside[0] = factor;
-	return output;
-}
-
-// ── Hull shader: trivial pass-through ────────────────────────────────────────
-[domain("tri")]
-[partitioning("fractional_even")]
-[outputtopology("triangle_cw")]
-[outputcontrolpoints(3)]
-[patchconstantfunc("SnowHS_PatchConstantFunc")]
-[maxtessfactor(64.0f)]
-VS_OUTPUT SnowHS_main(
-	InputPatch<VS_OUTPUT, 3> patch,
-	uint                     i       : SV_OutputControlPointID,
-	uint                     PatchID : SV_PrimitiveID)
-{
-	return patch[i];
-}
-
-// ── Domain shader: interpolate + displace + reproject ───────────────────────
-[domain("tri")]
-VS_OUTPUT SnowDS_main(
-	SnowHS_PatchConstant          pcData,
-	float3                        bary : SV_DomainLocation,
-	const OutputPatch<VS_OUTPUT, 3> patch)
-{
-	// Barycentric interpolation of all VS_OUTPUT fields.
-	// (Fields are chosen for the LANDSCAPE+VC+SNOW_DEFORMATION permutation.)
-	VS_OUTPUT v;
-	v.Position              = bary.x * patch[0].Position              + bary.y * patch[1].Position              + bary.z * patch[2].Position;
-	v.TexCoord0             = bary.x * patch[0].TexCoord0             + bary.y * patch[1].TexCoord0             + bary.z * patch[2].TexCoord0;
-	v.TBN0                  = bary.x * patch[0].TBN0                  + bary.y * patch[1].TBN0                  + bary.z * patch[2].TBN0;
-	v.TBN1                  = bary.x * patch[0].TBN1                  + bary.y * patch[1].TBN1                  + bary.z * patch[2].TBN1;
-	v.TBN2                  = bary.x * patch[0].TBN2                  + bary.y * patch[1].TBN2                  + bary.z * patch[2].TBN2;
-	v.LandBlendWeights1     = bary.x * patch[0].LandBlendWeights1     + bary.y * patch[1].LandBlendWeights1     + bary.z * patch[2].LandBlendWeights1;
-	v.LandBlendWeights2     = bary.x * patch[0].LandBlendWeights2     + bary.y * patch[1].LandBlendWeights2     + bary.z * patch[2].LandBlendWeights2;
-	v.WorldPosition         = bary.x * patch[0].WorldPosition         + bary.y * patch[1].WorldPosition         + bary.z * patch[2].WorldPosition;
-	v.PreviousWorldPosition = bary.x * patch[0].PreviousWorldPosition + bary.y * patch[1].PreviousWorldPosition + bary.z * patch[2].PreviousWorldPosition;
-	v.Color                 = bary.x * patch[0].Color                 + bary.y * patch[1].Color                 + bary.z * patch[2].Color;
-	v.FogParam              = bary.x * patch[0].FogParam              + bary.y * patch[1].FogParam              + bary.z * patch[2].FogParam;
-	v.ModelPosition         = bary.x * patch[0].ModelPosition         + bary.y * patch[1].ModelPosition         + bary.z * patch[2].ModelPosition;
-
-	SharedData::SnowDeformationSettings s = SharedData::snowDeformationSettings;
-
-	[branch] if (s.Enabled)
-	{
-		// Diagnostic bypass: when DebugForceDeform is set, simulate fully-compressed snow —
-		// displacement = SnowLayerDepth everywhere → net Z offset = 0 → terrain sits exactly
-		// at physics height.  Toggle this off to see the full raise and confirm DS is working.
-		[branch] if (s.DebugForceDeform)
-		{
-			v.Position = mul(FrameBuffer::CameraViewProj[0], float4(v.WorldPosition.xyz, 1.0));
-			return v;
-		}
-
-		// Convert camera-relative XY to absolute world XY for the toroidal grid lookup.
-		float2 absXY = v.WorldPosition.xy + FrameBuffer::CameraPosAdjust[0].xy;
-
-		// Toroidal UV:
-		//   UV = ((worldXY - GridWorldOrigin) / GridCellSize + ArrayOrigin) / GRID_DIM
-		float2 localXY    = (absXY - float2(s.GridWorldOriginX, s.GridWorldOriginY)) / s.GridCellSize;
-		float2 arrayCoord = localXY + float2((float)s.ArrayOriginX, (float)s.ArrayOriginY);
-		float2 gridUV     = arrayCoord / 512.0;
-
-		float displacement = texSnowDeformDS.SampleLevel(deformSamplerDS, gridUV, 0);
-
-		// Fluffy-snow model: terrain is raised by SnowLayerDepth by default (untouched snow).
-		// Actor contact writes displacement toward SnowLayerDepth, compressing the snow back
-		// down to the physics terrain level.  Net Z offset = SnowLayerDepth - displacement:
-		//   displacement = 0            → raised by SnowLayerDepth  (untouched fluffy snow)
-		//   displacement = SnowLayerDepth → no raise                 (fully-compressed footprint)
-		// PreviousWorldPosition is displaced by the same amount so TAA motion vectors
-		// stay valid (no false per-frame screen-space drift on static snow terrain).
-		v.WorldPosition.z         += (s.SnowLayerDepth - displacement);
-		v.PreviousWorldPosition.z += (s.SnowLayerDepth - displacement);
-
-		// ALWAYS reproject from world position to clip space, even when no displacement
-		// is applied.  The DS receives v.Position as the barycentric interpolation of the
-		// three control-point clip-space positions, which is perspective-incorrect for any
-		// tessellated interior vertex.  Re-computing from v.WorldPosition (which IS correct
-		// in world-space) gives the exact clip position the GPU needs.
-		// FrameBuffer::CameraViewProj[0] == ViewProj[0] in VS_PerFrame (same b12, c8).
-		v.Position = mul(FrameBuffer::CameraViewProj[0], float4(v.WorldPosition.xyz, 1.0));
-	}
-
-	return v;
-}
-
-#endif  // defined(SNOW_DEFORMATION) && !defined(VR) && (defined(HULLSHADER) || defined(DOMAINSHADER))

@@ -68,13 +68,13 @@ bool IsNewCell(uint2 tc)
 
 	int2 localCell = (((int2)tc - arrayOrigin) % (int)GRID_DIM + (int)GRID_DIM) % (int)GRID_DIM;
 
-	if (validMargin.x > 0 && localCell.x >= ((int)GRID_DIM - validMargin.x))
+	if (validMargin.x < 0 && localCell.x >= ((int)GRID_DIM + validMargin.x))
 		return true;
-	if (validMargin.x < 0 && localCell.x < (-validMargin.x))
+	if (validMargin.x > 0 && localCell.x < validMargin.x)
 		return true;
-	if (validMargin.y > 0 && localCell.y >= ((int)GRID_DIM - validMargin.y))
+	if (validMargin.y < 0 && localCell.y >= ((int)GRID_DIM + validMargin.y))
 		return true;
-	if (validMargin.y < 0 && localCell.y < (-validMargin.y))
+	if (validMargin.y > 0 && localCell.y < validMargin.y)
 		return true;
 
 	return false;

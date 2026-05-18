@@ -88,6 +88,8 @@ namespace Permutation
 		static const int THLand3HasDisplacement = (1 << 3);
 		static const int THLand4HasDisplacement = (1 << 4);
 		static const int THLand5HasDisplacement = (1 << 5);
+		static const int NoTint = (1 << 10);
+		static const int NoSnow = (1 << 11);
 		static const int THLandHasDisplacement = (1 << 9);
 	}
 

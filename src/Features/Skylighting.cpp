@@ -1,5 +1,6 @@
 #include "Skylighting.h"
 
+#include "Features/SnowDeformation.h"
 #include "ShaderCache.h"
 #include "State.h"
 #include "Utils/D3D.h"
@@ -364,6 +365,20 @@ RE::BSShaderProperty::RenderPassArray* Skylighting::BSLightingShaderProperty_Get
 	} else {
 		if (property->flags.any(kSkinned))
 			return precipitationOcclusionMapRenderPassList;
+	}
+
+	// Exclude SceneHeight/SnowDeformation's own snow slabs from the top-down
+	// occlusion render.  If the slabs participate, SceneHeight's CPU readback
+	// captures the slabs' own Z as "ground", and the slabs end up following
+	// themselves — a feedback loop that produces flat per-slab plateaus
+	// stepped by `layerDepth` each refresh (verified via diagnostic readback
+	// 2026-05-18: values clustered at -7081, -7049, -7017 = slab Z + 32n).
+	// Skylighting still gets terrain + statics for its own purposes; only our
+	// synthetic snow geometry is filtered out.
+	if (skylighting.inOcclusion &&
+		globals::features::snowDeformation.loaded &&
+		globals::features::snowDeformation.IsRegisteredSnowSlab(geometry)) {
+		return precipitationOcclusionMapRenderPassList;
 	}
 
 	if (skylighting.inOcclusion) {

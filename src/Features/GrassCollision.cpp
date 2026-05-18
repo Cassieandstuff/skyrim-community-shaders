@@ -191,8 +191,8 @@ void GrassCollision::Update()
 		perFrameData.PosOffset = cellOrigin - eyePos;
 
 		perFrameData.ArrayOrigin = {
-			((int)cellID.x - textureArrayDims / 2) % textureArrayDims,
-			((int)cellID.y - textureArrayDims / 2) % textureArrayDims
+			(uint32_t)((((int)cellID.x - (int)textureArrayDims / 2) % (int)textureArrayDims + (int)textureArrayDims) % (int)textureArrayDims),
+			(uint32_t)((((int)cellID.y - (int)textureArrayDims / 2) % (int)textureArrayDims + (int)textureArrayDims) % (int)textureArrayDims)
 		};
 
 		perFrameData.ValidMargin = { (int)cellIDDiff.x, (int)cellIDDiff.y };

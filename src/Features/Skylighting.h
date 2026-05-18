@@ -68,6 +68,32 @@ public:
 
 	SkylightingCB GetCommonBufferData(bool a_inWorld);
 
+	// =========================================================================
+	// Scene-occlusion publication API
+	//   Skylighting owns the top-down scene depth render (texOcclusion +
+	//   OcclusionTransform).  These getters publish the data read-only so other
+	//   subsystems (e.g. SceneHeight) can consume it without depending on
+	//   Skylighting's internals.  No mutation contract — callers must treat
+	//   the returned data as a borrowed snapshot.
+	//
+	//   Returns nullptr SRV when Skylighting is unloaded / texOcclusion isn't
+	//   initialized yet.  Consumers should null-check and gracefully degrade.
+	// =========================================================================
+	[[nodiscard]] ID3D11ShaderResourceView* GetSceneOcclusionSRV() const
+	{
+		return texOcclusion ? texOcclusion->srv.get() : nullptr;
+	}
+
+	[[nodiscard]] const REX::W32::XMFLOAT4X4& GetSceneOcclusionTransform() const
+	{
+		return OcclusionTransform;
+	}
+
+	[[nodiscard]] float GetSceneOcclusionCoverage() const
+	{
+		return occlusionDistance;
+	}
+
 	winrt::com_ptr<ID3D11SamplerState> comparisonSampler = nullptr;
 
 	Texture2D* texOcclusion = nullptr;

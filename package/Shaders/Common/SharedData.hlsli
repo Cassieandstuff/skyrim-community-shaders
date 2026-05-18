@@ -8,7 +8,7 @@
 namespace SharedData
 {
 
-#if defined(PSHADER) || defined(CSHADER) || defined(COMPUTESHADER) || defined(HULLSHADER) || defined(DOMAINSHADER)
+#if defined(PSHADER) || defined(CSHADER) || defined(COMPUTESHADER) || defined(HULLSHADER) || defined(DOMAINSHADER) || defined(VSHADER)
 	cbuffer SharedData : register(b5)
 	{
 		float4 WaterData[25];
@@ -137,6 +137,44 @@ namespace SharedData
 		float MinDiffuseVisibility;
 		float MinSpecularVisibility;
 		uint2 pad0;
+	};
+
+	struct SnowCoverSettings
+	{
+		float Month;
+		float TimeSnowing;
+		float SnowingDensity;
+		float SeasonalAltitude;
+
+		uint EnableExpensiveFoliage;
+		float SnowHeightOffset;
+		uint AffectHavok;
+		float TreeSnowAmount;
+
+		uint EnableSnowCover;
+		uint AffectGrassTint;
+		uint AffectTreeTint;
+		float FoliageHeightOffset;
+
+		float UVScale;
+		float peakMainAngle;
+		float peakAltAngle;
+		float minAngle;
+
+		float maxAngle;
+		float mainSpec;
+		float altSpec;
+		float mapZscale;
+
+		float2 mapScale;
+		float2 mapOffset;
+
+		float4 Glint;
+		float4 MainTint;
+		float4 AltTint;
+
+		float BlendSmoothness;
+		uint3 pad2;
 	};
 
 	struct CloudShadowsSettings
@@ -318,6 +356,45 @@ namespace SharedData
 		float pad2;
 	};
 
+	// =========================================================================
+	// SceneHeightSettings
+	//   Layer 1 infrastructure cbuffer entry.  Mirrors SceneHeight::PerFrame in
+	//   src/SceneHeight.h byte-for-byte.  Used by Common/SceneHeight.hlsli's
+	//   SampleWaterHeight / SampleSceneHeight / IsOverWater / IsOccluderAbove.
+	//
+	//   Row 0 — water mask (Layer 1.1)
+	//     WaterMaskWorldOriginX/Y : SW corner of cached window (world space)
+	//     WaterMaskInvCoverage    : 1 / 10000 — world-XY-offset → UV scale
+	//     WaterMaskReady          : 0 while filling, 1 after first refresh
+	//
+	//   Row 1 — scene height broker (Layer 1.2) + snow mask gate (Layer 2)
+	//     SceneHeightReady        : 1 only when Skylighting is loaded AND its
+	//                               texOcclusion is initialized.  The projection
+	//                               matrix itself is borrowed from
+	//                               skylightingSettings.OcclusionViewProj — no
+	//                               duplication.  Gate ALL scene-height math on
+	//                               this flag (otherwise zero matrix → NaN).
+	//     SnowMaskReady            : 1 once the snow-mask CS has produced its
+	//                               first result for the current cell.  Layer 3
+	//                               (and any consumer of SampleSnowMask) gates
+	//                               on this; while 0 → "snow allowed everywhere"
+	//                               graceful fallback.
+	// =========================================================================
+	struct SceneHeightSettings
+	{
+		// Row 0
+		float WaterMaskWorldOriginX;
+		float WaterMaskWorldOriginY;
+		float WaterMaskInvCoverage;
+		float WaterMaskReady;
+
+		// Row 1
+		float SceneHeightReady;
+		float SnowMaskReady;
+		float _pad0;
+		float _pad1;
+	};
+
 	struct SnowDeformationSettings
 	{
 		// Row 0
@@ -360,6 +437,7 @@ namespace SharedData
 		LightLimitFixSettings lightLimitFixSettings;
 		WetnessEffectsSettings wetnessEffectsSettings;
 		SkylightingSettings skylightingSettings;
+		SnowCoverSettings snowCoverSettings;
 		CloudShadowsSettings cloudShadowsSettings;
 		LODBlendingSettings lodBlendingSettings;
 		HairSpecularSettings hairSpecularSettings;
@@ -371,6 +449,7 @@ namespace SharedData
 		ExponentialHeightFogSettings exponentialHeightFogSettings;
 		BloodDecalGrassSettings bloodDecalGrassSettings;
 		SnowDeformationSettings snowDeformationSettings;
+		SceneHeightSettings sceneHeightSettings;
 	};
 
 	Texture2D<float4> DepthTexture : register(t17);

@@ -42,7 +42,8 @@ groupshared BoundingBoxPacked SharedBoundingBoxes[64];
 	const float WORLD_SIZE = 4096;
 	float2 ZRANGE = float2(2048.0, -2048.0);
 
-	uint2 cellID = uint2(max(int2(dispatchThreadId.xy) - ArrayOrigin, 0) % TEXTURE_SIZE);
+	int2 arrayOrigin = int2(ArrayOrigin);
+	uint2 cellID = (uint2)((int2(dispatchThreadId.xy) - arrayOrigin + (int)TEXTURE_SIZE) % (int)TEXTURE_SIZE);
 
 	float2 cellCentreMS = cellID + 0.5 - TEXTURE_SIZE / 2;
 	cellCentreMS = cellCentreMS / TEXTURE_SIZE * WORLD_SIZE + PosOffset.xy;

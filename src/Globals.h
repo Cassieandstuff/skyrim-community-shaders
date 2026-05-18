@@ -36,8 +36,11 @@ struct Upscaling;
 struct WeatherEditor;
 struct ExponentialHeightFog;
 struct HDRDisplay;
+struct MeshCombiner;
 struct MeshInstancing;
+struct SnowCover;
 struct SnowDeformation;
+struct SceneHeight;
 
 class State;
 class Deferred;
@@ -98,8 +101,11 @@ namespace globals
 		extern WeatherEditor weatherEditor;
 		extern ExponentialHeightFog exponentialHeightFog;
 		extern TruePBR truePBR;
+		extern MeshCombiner meshCombiner;
 		extern MeshInstancing meshInstancing;
+		extern SnowCover snowCover;
 		extern SnowDeformation snowDeformation;
+		extern SceneHeight sceneHeight;
 
 		namespace llf
 		{

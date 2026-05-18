@@ -35,10 +35,13 @@
 #include "Features/VolumetricShadows.h"
 #include "Features/WaterEffects.h"
 #include "Features/WeatherEditor.h"
+#include "Features/MeshCombiner.h"
 #include "Features/MeshInstancing.h"
+#include "Features/SnowCover.h"
 #include "Features/SnowDeformation.h"
 #include "Features/WetnessEffects.h"
 #include "Menu.h"
+#include "SceneHeight.h"
 #include "ShaderCache.h"
 #include "State.h"
 #include "TruePBR.h"
@@ -91,8 +94,11 @@ namespace globals
 		WeatherEditor weatherEditor{};
 		ExponentialHeightFog exponentialHeightFog{};
 		TruePBR truePBR{};
+		MeshCombiner meshCombiner{};
 		MeshInstancing meshInstancing{};
+		SnowCover snowCover{};
 		SnowDeformation snowDeformation{};
+		SceneHeight sceneHeight{};
 
 		namespace llf
 		{
@@ -393,9 +399,6 @@ namespace globals
 
 	if (globals::features::meshInstancing.loaded)
 		stl::detour_vfunc<12, MeshInstancing::Hooks::ID3D11DeviceContext_DrawIndexed>(a_context);
-
-	if (globals::features::snowDeformation.loaded)
-		stl::detour_vfunc<12, SnowDeformation::Hooks::ID3D11DeviceContext_DrawIndexed>(a_context);
 
 	// VR stereo optimization hooks: installed only when stereo reprojection is enabled at startup.
 	// Changing stereoMode at runtime requires a restart; the UI communicates this to the user.

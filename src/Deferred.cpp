@@ -17,6 +17,7 @@
 #include "Features/VR.h"
 #include "Features/WeatherEditor.h"
 #include "Features/SnowDeformation.h"
+#include "SceneHeight.h"
 
 #include "Hooks.h"
 
@@ -282,6 +283,7 @@ void Deferred::StartDeferred()
 	}
 
 	PrepassPasses();
+	globals::state->UpdateSharedData(true, false);
 
 	OverrideBlendStates();
 
@@ -332,6 +334,25 @@ void Deferred::DeferredPasses()
 
 	auto& skylighting = globals::features::skylighting;
 
+	// Snow deformation CS pass: projects actor-contact depth into the toroidal grid.
+	// Output is the SnowDeformation texture that Milestone 2 will use to drive
+	// per-vertex displacement of the cloned snow geometry via a UAV write to its VB.
+	// (Milestone 1 — static clones, no per-frame deformation read.)
+	auto& snowDeformation = globals::features::snowDeformation;
+	if (snowDeformation.loaded) {
+		snowDeformation.DeformationPass();
+	}
+
+	// Snow mask CS pass (SceneHeight Layer 2): derives the per-texel "snow
+	// allowed" mask from water + scene height + slope.  Cheap when nothing to
+	// do (early-returns when already valid for the current cell).  Dispatched
+	// here AFTER Skylighting::RenderOcclusion has released its DSV — sampling
+	// texOcclusion as SRV is safe in this frame phase.
+	auto& sceneHeight = globals::features::sceneHeight;
+	if (sceneHeight.loaded) {
+		sceneHeight.DispatchSnowMaskCSIfNeeded();
+	}
+
 	auto& ssgi = globals::features::screenSpaceGI;
 	if (ssgi.loaded)
 		ssgi.DrawSSGI();
@@ -347,14 +368,6 @@ void Deferred::DeferredPasses()
 	auto& dynamicCubemaps = globals::features::dynamicCubemaps;
 	if (dynamicCubemaps.loaded)
 		dynamicCubemaps.UpdateCubemap();
-
-	// Snow deformation CS pass: projects actor-contact depth into the toroidal grid.
-	// Must run after the geometry pass (depth buffer ready) but before Deferred Composite.
-	auto& snowDeformation = globals::features::snowDeformation;
-	if (snowDeformation.loaded) {
-		snowDeformation.DeformationPass();
-		snowDeformation.DrawSnowLayer();
-	}
 
 	auto& ibl = globals::features::ibl;
 
@@ -441,6 +454,7 @@ void Deferred::DeferredPasses()
 
 	if (dynamicCubemaps.loaded)
 		dynamicCubemaps.PostDeferred();
+
 }
 
 void Deferred::EndDeferred()

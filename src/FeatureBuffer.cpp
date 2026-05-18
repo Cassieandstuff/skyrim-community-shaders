@@ -16,6 +16,8 @@
 #include "Features/TerrainShadows.h"
 #include "Features/TerrainVariation.h"
 #include "Features/BloodDecalGrass.h"
+#include "SceneHeight.h"
+#include "Features/SnowCover.h"
 #include "Features/SnowDeformation.h"
 #include "Features/WetnessEffects.h"
 
@@ -45,6 +47,7 @@ std::pair<unsigned char*, size_t> GetFeatureBufferData(bool a_inWorld)
 		globals::features::lightLimitFix.GetCommonBufferData(),
 		globals::features::wetnessEffects.GetCommonBufferData(),
 		globals::features::skylighting.GetCommonBufferData(a_inWorld),
+		globals::features::snowCover.GetCommonBufferData(),
 		globals::features::cloudShadows.settings,
 		globals::features::lodBlending.settings,
 		globals::features::hairSpecular.settings,
@@ -55,5 +58,6 @@ std::pair<unsigned char*, size_t> GetFeatureBufferData(bool a_inWorld)
 		globals::features::terrainBlending.settings,
 		globals::features::exponentialHeightFog.settings,
 		globals::features::bloodDecalGrass.GetCommonBufferData(),
-		globals::features::snowDeformation.GetCommonBufferData());
+		globals::features::snowDeformation.GetCommonBufferData(),
+		globals::features::sceneHeight.GetCommonBufferData());
 }

@@ -18,7 +18,10 @@
 #include "Features/LODBlending.h"
 #include "Features/LightLimitFix.h"
 #include "Features/LinearLighting.h"
+#include "Features/MeshCombiner.h"
 #include "Features/MeshInstancing.h"
+#include "SceneHeight.h"
+#include "Features/SnowCover.h"
 #include "Features/SnowDeformation.h"
 #include "Features/PerformanceOverlay.h"
 #include "Features/RenderDoc.h"
@@ -248,7 +251,10 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::unifiedWater,
 		&globals::features::exponentialHeightFog,
 		&globals::features::hdrDisplay,
+		&globals::features::meshCombiner,
 		&globals::features::meshInstancing,
+		&globals::features::snowCover,
+		&globals::features::sceneHeight,
 		&globals::features::snowDeformation
 	};
 

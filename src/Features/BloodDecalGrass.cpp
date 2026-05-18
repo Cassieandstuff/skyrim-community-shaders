@@ -415,13 +415,13 @@ void BloodDecalGrass::UpdateTerrainHeight()
 				int localCellY = ((int)row - currentArrayOriginY % (int)GRID_DIM + (int)GRID_DIM) % (int)GRID_DIM;
 
 				bool isNew = false;
-				if (currentValidMarginX > 0 && localCellX >= (int)GRID_DIM - currentValidMarginX)
+				if (currentValidMarginX < 0 && localCellX >= (int)GRID_DIM + currentValidMarginX)
 					isNew = true;
-				if (currentValidMarginX < 0 && localCellX < -currentValidMarginX)
+				if (currentValidMarginX > 0 && localCellX < currentValidMarginX)
 					isNew = true;
-				if (currentValidMarginY > 0 && localCellY >= (int)GRID_DIM - currentValidMarginY)
+				if (currentValidMarginY < 0 && localCellY >= (int)GRID_DIM + currentValidMarginY)
 					isNew = true;
-				if (currentValidMarginY < 0 && localCellY < -currentValidMarginY)
+				if (currentValidMarginY > 0 && localCellY < currentValidMarginY)
 					isNew = true;
 
 				if (isNew) {
