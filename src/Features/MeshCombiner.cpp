@@ -227,16 +227,23 @@ RE::NiPointer<RE::BSTriShape> MeshCombiner::BuildCombinedMesh(
 	if (vertexStride == 0 || vertexStride > 128)
 		return nullptr;
 
-	// Tangent frame attribute offsets — same for every source in the group (same vertexDesc).
-	// Normal+tangent are 4 SNORM8 bytes each; the 4th component of position/normal/tangent
-	// stores bitangent.x/y/z respectively, so we must transform N, T, and B together.
+	// Tangent frame layout (per the engine's vertex shader in Lighting.hlsl):
+	//   Normal slot:    xyz = NORMAL (UNORM8, decoded as byte/255*2-1),  w = tangent.y (UNORM8)
+	//   Bitangent slot: xyz = BITANGENT (UNORM8, same),                  w = tangent.z (UNORM8)
+	//   Position.w:     tangent.x (raw float in [-1, 1])
+	// Note: CommonLibSSE-NG calls the bitangent slot VA_BINORMAL / VF_TANGENT — the names are
+	// confusing but the slot stores the bitangent vector, with the actual tangent split across
+	// the W components of position, normal, and bitangent.
 	const bool hasNormal = vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_NORMAL);
 	const bool hasTangent = vertexDesc.HasFlag(RE::BSGraphics::Vertex::VF_TANGENT);
 	const uint32_t normalOffset = vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::VA_NORMAL);
-	const uint32_t tangentOffset = vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::VA_BINORMAL);
+	const uint32_t bitangentOffset = vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::VA_BINORMAL);
 
-	auto encodeSnorm8 = [](float v) -> int8_t {
-		return static_cast<int8_t>(std::clamp(v * 127.0f, -127.0f, 127.0f));
+	auto decodeUnorm8 = [](uint8_t b) -> float {
+		return b / 255.0f * 2.0f - 1.0f;
+	};
+	auto encodeUnorm8 = [](float v) -> uint8_t {
+		return static_cast<uint8_t>(std::clamp((v + 1.0f) * 127.5f, 0.0f, 255.0f));
 	};
 	auto normalize = [](RE::NiPoint3 v) -> RE::NiPoint3 {
 		float len = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
@@ -288,26 +295,27 @@ RE::NiPointer<RE::BSTriShape> MeshCombiner::BuildCombinedMesh(
 			float* pos = reinterpret_cast<float*>(dst);
 
 			// Read all model-space values from the freshly-copied vertex BEFORE writing
-			// anything back. The bitangent is split across pos.w / normal.w / tangent.w.
+			// anything back. Tangent is split across pos.w (float) and the W components of
+			// the normal and bitangent slots (UNORM8).
 			RE::NiPoint3 posLocal{ pos[0], pos[1], pos[2] };
-			float bitX_local = pos[3];
+			float tangentX_local = pos[3];
 
-			int8_t* nBytes = nullptr;
-			int8_t* tBytes = nullptr;
+			uint8_t* nBytes = nullptr;
+			uint8_t* bBytes = nullptr;
 			RE::NiPoint3 normalLocal{};
-			RE::NiPoint3 tangentLocal{};
-			float bitY_local = 0.0f;
-			float bitZ_local = 0.0f;
+			RE::NiPoint3 bitangentLocal{};
+			float tangentY_local = 0.0f;
+			float tangentZ_local = 0.0f;
 
 			if (hasNormal) {
-				nBytes = reinterpret_cast<int8_t*>(dst + normalOffset);
-				normalLocal = { nBytes[0] / 127.0f, nBytes[1] / 127.0f, nBytes[2] / 127.0f };
-				bitY_local = nBytes[3] / 127.0f;
+				nBytes = dst + normalOffset;
+				normalLocal = { decodeUnorm8(nBytes[0]), decodeUnorm8(nBytes[1]), decodeUnorm8(nBytes[2]) };
+				tangentY_local = decodeUnorm8(nBytes[3]);
 			}
 			if (hasTangent) {
-				tBytes = reinterpret_cast<int8_t*>(dst + tangentOffset);
-				tangentLocal = { tBytes[0] / 127.0f, tBytes[1] / 127.0f, tBytes[2] / 127.0f };
-				bitZ_local = tBytes[3] / 127.0f;
+				bBytes = dst + bitangentOffset;
+				bitangentLocal = { decodeUnorm8(bBytes[0]), decodeUnorm8(bBytes[1]), decodeUnorm8(bBytes[2]) };
+				tangentZ_local = decodeUnorm8(bBytes[3]);
 			}
 
 			// Transform position (point: rotate + scale + translate)
@@ -328,19 +336,20 @@ RE::NiPointer<RE::BSTriShape> MeshCombiner::BuildCombinedMesh(
 			// renormalize keeps non-uniform cases approximately correct without an inverse-transpose.
 			if (hasNormal) {
 				auto N = normalize(world.rotate * normalLocal);
-				nBytes[0] = encodeSnorm8(N.x);
-				nBytes[1] = encodeSnorm8(N.y);
-				nBytes[2] = encodeSnorm8(N.z);
+				nBytes[0] = encodeUnorm8(N.x);
+				nBytes[1] = encodeUnorm8(N.y);
+				nBytes[2] = encodeUnorm8(N.z);
 
 				if (hasTangent) {
-					auto T = normalize(world.rotate * tangentLocal);
-					auto B = normalize(world.rotate * RE::NiPoint3{ bitX_local, bitY_local, bitZ_local });
-					tBytes[0] = encodeSnorm8(T.x);
-					tBytes[1] = encodeSnorm8(T.y);
-					tBytes[2] = encodeSnorm8(T.z);
-					pos[3] = B.x;
-					nBytes[3] = encodeSnorm8(B.y);
-					tBytes[3] = encodeSnorm8(B.z);
+					auto B = normalize(world.rotate * bitangentLocal);
+					auto T = normalize(world.rotate * RE::NiPoint3{ tangentX_local, tangentY_local, tangentZ_local });
+					bBytes[0] = encodeUnorm8(B.x);
+					bBytes[1] = encodeUnorm8(B.y);
+					bBytes[2] = encodeUnorm8(B.z);
+					// Split tangent across the W components
+					pos[3] = T.x;
+					nBytes[3] = encodeUnorm8(T.y);
+					bBytes[3] = encodeUnorm8(T.z);
 				}
 			}
 		}
